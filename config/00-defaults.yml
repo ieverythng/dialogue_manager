@@ -1,5 +1,34 @@
 /dialogue_manager:
   ros__parameters:
-    # you can add here and document any other public parameters for your skill
-    parameter_name: parameter_value
-    #...
+    # Chatbot node FQN - prefix for ~/start_dialogue and ~/dialogue_interaction
+    # Empty string disables chatbot (forwards speech as RAW_USER_INPUT intent)
+    chatbot: "chatbot"
+
+    # Enable default chat while node is active
+    enable_default_chat: false
+
+    # Role for the default chat
+    default_chat_role: "__default__"
+
+    # Configuration for the default chat (JSON string)
+    default_chat_configuration: ""
+
+    # Maximum wait time for chatbot model startup (seconds)
+    chatbot_startup_timeout: 30.0
+
+    # Maximum wait time for chatbot responses (seconds)
+    chatbot_response_timeout: 5.0
+
+    # Maximum execution duration for full multi-modal expression (seconds)
+    multi_modal_expression_timeout: 60.0
+
+    # Default max time for markup actions (seconds)
+    markup_action_timeout: 10.0
+
+    # Paths to JSON files defining markup actions/variables
+    markup_libraries:
+      - "config/00-default_markup_libraries.json"
+
+    # Markup actions to skip during expression execution
+    disabled_markup_actions:
+      - "motion"

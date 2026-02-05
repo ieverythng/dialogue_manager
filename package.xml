@@ -11,6 +11,8 @@
 
   <depend>rclpy</depend>
   <depend>lifecycle_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>diagnostic_msgs</depend>
 
   <exec_depend>action_msgs</exec_depend>
   <exec_depend>launch</exec_depend>
@@ -18,6 +20,10 @@
   <exec_depend>launch_pal</exec_depend>
 
   <exec_depend>communication_skills</exec_depend>
+  <exec_depend>chatbot_msgs</exec_depend>
+  <exec_depend>tts_msgs</exec_depend>
+  <exec_depend>hri_msgs</exec_depend>
+  <exec_depend>hri_actions_msgs</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

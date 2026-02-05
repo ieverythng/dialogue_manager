@@ -25,13 +25,13 @@ import rclpy
 
 from rclpy.executors import MultiThreadedExecutor
 
-import dialogue_manager.manager_core
+import dialogue_manager.manager_core as manager_core
 
 
 def main():
     rclpy.init()
 
-    skill = dialogue_manager.skill_impl.DialogueManagerSkillImpl()
+    skill = manager_core.DialogueManagerNode()
     skill_executor = MultiThreadedExecutor()
     skill_executor.add_node(skill)
 
