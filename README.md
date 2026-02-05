@@ -1,0 +1,126 @@
+ROS4HRI-compatible dialogue manager
+====================
+
+Welcome to your new robot skill template!
+
+What are the next steps?
+
+## Compile and install the skill
+
+You need a ROS 2 environment to compile the template.
+
+You can for instance use the ROS humble Docker image, or PAL Robotics own 
+public 'tutorials' Docker image (itself based on ROS humble):
+
+```
+> docker pull palrobotics/public-tutorials-alum-devel
+> docker run -it --name ros2_sandbox \
+             -v <path to your workspace>:/home/user/exchange/ws \
+             palrobotics/public-tutorials-alum-devel bash
+```
+
+Then, simply run:
+
+```
+> cd /home/user/exchange/ws
+> colcon build
+> source install/setup.bash
+```
+
+You can now start your skill with:
+
+```
+> ros2 launch dialogue_manager dialogue_manager.launch.py
+```
+
+## Testing
+
+This basic skill template does not do much on this own. However, we can already check it works
+as intended.
+
+Open a second terminal, and run:
+
+```
+ros2 action list
+```
+
+> Note: you can open a new terminal in the same Docker image with:
+> ```
+> docker exec -it ros2_sandbox bash
+> ```
+
+You should see your skill action:
+
+```
+/skill/dialogue_manager
+```
+
+
+We can trigger the skill (from a third terminal):
+
+```
+ros2 action send_goal /skill/dialogue_manager dialogue_manager_skill_msgs/action/DialogueManager "skill_data: 'test data'" 
+```
+
+You should get the following output:
+
+```
+Waiting for an action server to become available...
+Sending goal:
+     skill_data: test data
+
+Goal accepted with ID: a257b444a54d4f42911678d6f93e7e65
+
+Result:
+    result:
+  error_code: 0
+  error_msg: ''
+    value: this is an important result
+
+Goal finished with status: SUCCEEDED
+```
+
+## Customize your skill
+
+By default, the template does not do anything useful. It is mainly an example of
+a complete (Python) ROS 2 lifecycle node.
+
+To implement your skill logic, have a look at `dialogue_manager/skill_impl.py`: this is
+the main file you will have to modify.
+
+You might want however to create a custom message type to start/configure/stop
+your skill. Check the `dialogue_manager_skill_msgs` package that has been generated alongside
+this package, and feel free to modify it & rename it as you see fit.
+
+## Install on the robot
+
+**To deploy the code to the robot, you have to run the following commands from
+*inside* your PAL OS Developer Docker image**.
+
+- from within the PAL OS Developer Docker image, go to root of the project
+- run `ros2 run pal_deploy deploy --package dialogue_manager generic-pal-XXc` (replace `generic-pal-XXc` by your actual robot)
+
+You can now `ssh` onto the robot (`ssh pal@generic-pal-XXc`, password
+`pal`), and go to your project: `cd ~/deployed_ws/share/dialogue_manager`
+
+## Run your application
+
+`ssh` onto the robot (`ssh pal@generic-pal-XXc`, password `pal`).
+
+There are several ways to run the application:
+
+1. Automatically launch the app and transition to an active state:
+
+`ros2 launch dialogue_manager dialogue_manager.launch.py`
+
+2. Manually start your skill:
+
+`ros2 run dialogue_manager start_skill`
+
+3. Automatically start your application at startup:
+
+To make your application run at startup, uncomment the related lines in
+`setup.py` and reinstall the package. You can then start, stop or view the logs
+of the application as a module. See [Application
+management](https://docs.pal-robotics.com/edge/management/application-management)
+for more details. 

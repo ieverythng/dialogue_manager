@@ -1,0 +1,2 @@
+dialogue_manager:
+  launch: "dialogue_manager dialogue_manager.launch.py"
