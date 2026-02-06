@@ -44,8 +44,9 @@ class Dialogue:
     group_id: str = ""
     priority: int = 128
     state: DialogueState = DialogueState.PENDING
-    dialogue_id: UUID = field(default_factory=uuid4)
-    goal_handle: Optional[object] = None  # The action goal handle
+    dialogue_id: UUID = field(default_factory=uuid4)  # Internal tracking ID
+    chatbot_goal_id: Optional[UUID] = None  # The chatbot action goal UUID
+    goal_handle: Optional[object] = None  # The skill action goal handle
 
     def __post_init__(self):
         """Validate priority range."""

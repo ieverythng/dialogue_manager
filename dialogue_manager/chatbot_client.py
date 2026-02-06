@@ -148,15 +148,20 @@ class ChatbotClient:
         """Handle default dialogue start result."""
         goal_handle = future.result()
         if goal_handle and goal_handle.accepted:
+            # Extract the chatbot's goal UUID from the goal handle
+            chatbot_goal_id = UUID(bytes=bytes(goal_handle.goal_id.uuid))
+            
             dialogue = Dialogue(
                 role=DialogueRole(name='__default__'),
                 priority=0,  # Default chat has lowest priority
-                state=DialogueState.ACTIVE
+                state=DialogueState.ACTIVE,
+                chatbot_goal_id=chatbot_goal_id
             )
             self._default_dialogue_id = dialogue.dialogue_id
             self._dialogue_manager.add_dialogue(dialogue)
             self._node.get_logger().info(
-                f'[DEFAULT CHAT] Started successfully, dialogue_id={dialogue.dialogue_id}'
+                f'[DEFAULT CHAT] Started successfully, '
+                f'internal_id={dialogue.dialogue_id}, chatbot_goal_id={chatbot_goal_id}'
             )
         else:
             self._node.get_logger().warn('[DEFAULT CHAT] Failed - chatbot rejected goal')
@@ -172,7 +177,7 @@ class ChatbotClient:
         Send user input to chatbot.
 
         Args:
-            dialogue_id: ID of the dialogue session.
+            dialogue_id: Internal ID of the dialogue session.
             user_id: ID of the user sending input.
             text: User's input text.
             response_callback: Optional callback for response.
@@ -189,8 +194,12 @@ class ChatbotClient:
             self._node.get_logger().warn(f'[CHATBOT] Dialogue {dialogue_id} not found')
             return False
 
+        if not dialogue.chatbot_goal_id:
+            self._node.get_logger().warn(f'[CHATBOT] Dialogue {dialogue_id} has no chatbot goal ID')
+            return False
+
         self._node.get_logger().info(
-            f'[CHATBOT REQUEST] dialogue_id={dialogue_id}, '
+            f'[CHATBOT REQUEST] chatbot_goal_id={dialogue.chatbot_goal_id}, '
             f'user_id="{user_id}", text="{text}"'
         )
 
@@ -200,9 +209,9 @@ class ChatbotClient:
         dialogue.state = DialogueState.WAITING_RESPONSE
         self._node.get_logger().debug('[CHATBOT] State set to WAITING_RESPONSE')
 
-        # Build and send request
+        # Build and send request - use chatbot_goal_id, not internal dialogue_id
         request = DialogueInteraction.Request()
-        request.dialogue_id = uuid_to_msg(dialogue_id)
+        request.dialogue_id = uuid_to_msg(dialogue.chatbot_goal_id)
         request.user_id = user_id
         request.input = text
         request.response_expected = True

@@ -14,9 +14,7 @@
 
 """Main Dialogue Manager ROS2 node."""
 
-from rclpy.node import Node
-from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.lifecycle import TransitionCallbackReturn, State
+from rclpy.lifecycle import LifecycleNode, TransitionCallbackReturn, State
 from rcl_interfaces.msg import ParameterDescriptor
 
 from std_msgs.msg import String, Bool
@@ -28,9 +26,10 @@ from .tts_client import TTSClient
 from .chatbot_client import ChatbotClient
 from .speech_handler import SpeechHandler
 from .skill_servers import SkillServers
+from rclpy.callback_groups import ReentrantCallbackGroup
 
 
-class DialogueManagerNode(Node):
+class DialogueManagerNode(LifecycleNode):
     """
     Dialogue Manager ROS2 Lifecycle Node.
 
