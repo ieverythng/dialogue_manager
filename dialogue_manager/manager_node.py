@@ -14,19 +14,18 @@
 
 """Main Dialogue Manager ROS2 node."""
 
-from rclpy.lifecycle import LifecycleNode, TransitionCallbackReturn, State
-from rcl_interfaces.msg import ParameterDescriptor
-
-from std_msgs.msg import String, Bool
-from hri_actions_msgs.msg import Intent, ClosedCaption
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
-
-from .dialogue import DialogueManager
-from .tts_client import TTSClient
-from .chatbot_client import ChatbotClient
-from .speech_handler import SpeechHandler
-from .skill_servers import SkillServers
+from hri_actions_msgs.msg import ClosedCaption, Intent
+from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.lifecycle import LifecycleNode, State, TransitionCallbackReturn
+from std_msgs.msg import Bool, String
+
+from .chatbot_client import ChatbotClient
+from .dialogue import DialogueManager
+from .skill_servers import SkillServers
+from .speech_handler import SpeechHandler
+from .tts_client import TTSClient
 
 
 class DialogueManagerNode(LifecycleNode):
@@ -201,7 +200,9 @@ class DialogueManagerNode(LifecycleNode):
         if self.get_parameter('enable_default_chat').get_parameter_value().bool_value:
             if self._chatbot_client:
                 role = self.get_parameter('default_chat_role').get_parameter_value().string_value
-                config = self.get_parameter('default_chat_configuration').get_parameter_value().string_value
+                config = self.get_parameter(
+                    'default_chat_configuration'
+                ).get_parameter_value().string_value
                 self._chatbot_client.start_default_chat(role, config)
             else:
                 self.get_logger().warn('[ACTIVATE] Default chat enabled but no chatbot configured')
@@ -254,14 +255,20 @@ class DialogueManagerNode(LifecycleNode):
             name='/dialogue_manager',
             message='Dialogue Manager running',
             values=[
-                KeyValue(key='Active dialogues', value=str(len(self._dialogue_manager.active_dialogues))),
+                KeyValue(
+                    key='Active dialogues',
+                    value=str(len(self._dialogue_manager.active_dialogues))
+                ),
                 KeyValue(key='Chatbot configured', value=str(self._chatbot_client is not None)),
             ]
         )
 
         if self._chatbot_client:
             status.values.append(
-                KeyValue(key='Waiting for chatbot', value=str(self._chatbot_client.waiting_for_response))
+                KeyValue(
+                    key='Waiting for chatbot',
+                    value=str(self._chatbot_client.waiting_for_response)
+                )
             )
 
         arr.header.stamp = self.get_clock().now().to_msg()

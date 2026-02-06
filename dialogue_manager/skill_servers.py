@@ -17,19 +17,17 @@
 import json
 from typing import Optional
 
-from rclpy.node import Node
-from rclpy.action import ActionServer, GoalResponse, CancelResponse
-from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.publisher import Publisher
-
-from hri_actions_msgs.msg import ClosedCaption
-from communication_skills.action import Chat, Ask, Say
-from chatbot_msgs.action import Dialogue as DialogueAction
 from chatbot_msgs.msg import DialogueRole
+from communication_skills.action import Ask, Chat, Say
+from hri_actions_msgs.msg import ClosedCaption
+from rclpy.action import ActionServer, CancelResponse, GoalResponse
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.node import Node
+from rclpy.publisher import Publisher
 from tts_msgs.action import TTS
 
-from .dialogue import Dialogue, DialogueManager, DialogueState
 from .chatbot_client import ChatbotClient
+from .dialogue import Dialogue, DialogueManager, DialogueState
 from .tts_client import TTSClient
 
 
@@ -49,17 +47,7 @@ class SkillServers:
         closed_captions_pub: Publisher,
         callback_group: Optional[ReentrantCallbackGroup] = None
     ):
-        """
-        Initialize skill servers.
-
-        Args:
-            node: Parent ROS2 node.
-            dialogue_manager: For tracking dialogues and priority.
-            chatbot_client: For chatbot interactions.
-            tts_client: For TTS interactions.
-            closed_captions_pub: For publishing captions.
-            callback_group: Optional callback group.
-        """
+        """Initialize skill servers."""
         self._node = node
         self._dialogue_manager = dialogue_manager
         self._chatbot_client = chatbot_client
@@ -220,7 +208,7 @@ class SkillServers:
         # If initiate=true, generate initial utterance
         if request.initiate:
             if request.initial_input:
-                self._node.get_logger().info(f'[CHAT] Speaking initial input')
+                self._node.get_logger().info('[CHAT] Speaking initial input')
                 self._tts_client.speak(request.initial_input, request.meta.priority)
             else:
                 # Ask chatbot to generate greeting
@@ -270,7 +258,8 @@ class SkillServers:
         role.name = DialogueRole.ASK_ROLE
         role.configuration = json.dumps({
             'question': request.question,
-            'result_schema_properties': json.loads(request.answers_schema) if request.answers_schema else {}
+            'result_schema_properties': json.loads(request.answers_schema)
+            if request.answers_schema else {}
         })
 
         # Check chatbot availability
@@ -340,7 +329,10 @@ class SkillServers:
     async def _execute_say(self, goal_handle) -> Say.Result:
         """Execute Say action."""
         request = goal_handle.request
-        log_text = f'"{request.input[:50]}..."' if len(request.input) > 50 else f'"{request.input}"'
+        if len(request.input) > 50:
+            log_text = f'"{request.input[:50]}..."'
+        else:
+            log_text = f'"{request.input}"'
         self._node.get_logger().info(f'[SAY] Executing: {log_text}')
 
         result = Say.Result()

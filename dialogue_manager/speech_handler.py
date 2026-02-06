@@ -17,15 +17,14 @@
 import json
 from typing import Dict, Optional, Set
 
-from rclpy.node import Node
-from rclpy.subscription import Subscription
-from rclpy.publisher import Publisher
-
+from hri_actions_msgs.msg import ClosedCaption, Intent
 from hri_msgs.msg import IdsList, LiveSpeech
-from hri_actions_msgs.msg import Intent, ClosedCaption
+from rclpy.node import Node
+from rclpy.publisher import Publisher
+from rclpy.subscription import Subscription
 
-from .dialogue import DialogueManager
 from .chatbot_client import ChatbotClient
+from .dialogue import DialogueManager
 
 
 class SpeechHandler:
@@ -44,16 +43,7 @@ class SpeechHandler:
         closed_captions_pub: Publisher,
         intents_pub: Publisher
     ):
-        """
-        Initialize the speech handler.
-
-        Args:
-            node: Parent ROS2 node for logging and subscription creation.
-            dialogue_manager: For looking up dialogues.
-            chatbot_client: For sending speech to chatbot.
-            closed_captions_pub: Publisher for closed captions.
-            intents_pub: Publisher for intents.
-        """
+        """Initialize the speech handler."""
         self._node = node
         self._dialogue_manager = dialogue_manager
         self._chatbot_client = chatbot_client

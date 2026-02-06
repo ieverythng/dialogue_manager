@@ -17,18 +17,15 @@
 from typing import Callable, Optional
 from uuid import UUID
 
-from rclpy.node import Node
-from rclpy.action import ActionClient
-from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.publisher import Publisher
-
-from std_msgs.msg import Bool
-from hri_actions_msgs.msg import Intent
-from unique_identifier_msgs.msg import UUID as UUIDMsg
-
 from chatbot_msgs.action import Dialogue as DialogueAction
 from chatbot_msgs.msg import DialogueRole
 from chatbot_msgs.srv import DialogueInteraction
+from rclpy.action import ActionClient
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.node import Node
+from rclpy.publisher import Publisher
+from std_msgs.msg import Bool
+from unique_identifier_msgs.msg import UUID as UUIDMsg
 
 from .dialogue import Dialogue, DialogueManager, DialogueState
 from .tts_client import TTSClient
@@ -56,17 +53,7 @@ class ChatbotClient:
         waiting_chatbot_pub: Publisher,
         callback_group: Optional[ReentrantCallbackGroup] = None
     ):
-        """
-        Initialize the chatbot client.
-
-        Args:
-            node: Parent ROS2 node for logging and client creation.
-            dialogue_manager: For tracking dialogues.
-            tts_client: For speaking chatbot responses.
-            intents_pub: Publisher for detected intents.
-            waiting_chatbot_pub: Publisher for waiting state.
-            callback_group: Optional callback group for clients.
-        """
+        """Initialize the chatbot client."""
         self._node = node
         self._dialogue_manager = dialogue_manager
         self._tts_client = tts_client
@@ -150,7 +137,6 @@ class ChatbotClient:
         if goal_handle and goal_handle.accepted:
             # Extract the chatbot's goal UUID from the goal handle
             chatbot_goal_id = UUID(bytes=bytes(goal_handle.goal_id.uuid))
-            
             dialogue = Dialogue(
                 role=DialogueRole(name='__default__'),
                 priority=0,  # Default chat has lowest priority
@@ -173,18 +159,7 @@ class ChatbotClient:
         text: str,
         response_callback: Optional[Callable] = None
     ) -> bool:
-        """
-        Send user input to chatbot.
-
-        Args:
-            dialogue_id: Internal ID of the dialogue session.
-            user_id: ID of the user sending input.
-            text: User's input text.
-            response_callback: Optional callback for response.
-
-        Returns:
-            True if input was sent, False otherwise.
-        """
+        """Send user input to chatbot."""
         if not self._interaction_client:
             self._node.get_logger().warn('[CHATBOT] No interaction client available')
             return False
@@ -195,7 +170,9 @@ class ChatbotClient:
             return False
 
         if not dialogue.chatbot_goal_id:
-            self._node.get_logger().warn(f'[CHATBOT] Dialogue {dialogue_id} has no chatbot goal ID')
+            self._node.get_logger().warn(
+                f'[CHATBOT] Dialogue {dialogue_id} has no chatbot goal ID'
+            )
             return False
 
         self._node.get_logger().info(
@@ -249,7 +226,10 @@ class ChatbotClient:
             )
             return
 
-        log_text = f'"{response.response[:100]}..."' if len(response.response) > 100 else f'"{response.response}"'
+        if len(response.response) > 100:
+            log_text = f'"{response.response[:100]}..."'
+        else:
+            log_text = f'"{response.response}"'
         self._node.get_logger().info(
             f'[CHATBOT RESPONSE] dialogue_id={dialogue_id}: {log_text}'
         )
@@ -260,7 +240,10 @@ class ChatbotClient:
                 f'[CHATBOT RESPONSE] {len(response.intents)} intent(s) detected'
             )
             for i, intent in enumerate(response.intents):
-                log_data = f'"{intent.data[:80]}..."' if len(intent.data) > 80 else f'"{intent.data}"'
+                if len(intent.data) > 80:
+                    log_data = f'"{intent.data[:80]}..."'
+                else:
+                    log_data = f'"{intent.data}"'
                 self._node.get_logger().info(
                     f'[INTENT {i+1}] type="{intent.intent}", data={log_data}'
                 )
@@ -285,16 +268,7 @@ class ChatbotClient:
         role: DialogueRole,
         timeout_sec: float = 5.0
     ) -> Optional[object]:
-        """
-        Start a new dialogue session.
-
-        Args:
-            role: Dialogue role configuration.
-            timeout_sec: Timeout for server availability.
-
-        Returns:
-            Goal handle if accepted, None otherwise.
-        """
+        """Start a new dialogue session."""
         if not self._dialogue_client:
             self._node.get_logger().warn('[CHATBOT] No dialogue client available')
             return None

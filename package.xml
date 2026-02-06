@@ -7,7 +7,7 @@
   <maintainer email="severin.lemaignan@iiia.csic.es">Séverin Lemaignan</maintainer>
   <author email="severin.lemaignan@iiia.csic.es">Séverin Lemaignan</author>
 
-  <license>Apache-2.0</license>
+  <license>Apache License 2.0</license>
 
   <depend>rclpy</depend>
   <depend>lifecycle_msgs</depend>

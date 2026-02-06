@@ -16,13 +16,12 @@
 
 from typing import Callable, Optional
 
-from rclpy.node import Node
+from hri_actions_msgs.msg import ClosedCaption
 from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.node import Node
 from rclpy.publisher import Publisher
-
 from std_msgs.msg import String
-from hri_actions_msgs.msg import ClosedCaption
 from tts_msgs.action import TTS
 
 from .dialogue import DialogueManager
@@ -44,16 +43,7 @@ class TTSClient:
         robot_speech_pub: Publisher,
         callback_group: Optional[ReentrantCallbackGroup] = None
     ):
-        """
-        Initialize the TTS client.
-
-        Args:
-            node: Parent ROS2 node for logging and action client creation.
-            dialogue_manager: For tracking expression priority.
-            closed_captions_pub: Publisher for closed captions.
-            robot_speech_pub: Publisher for current word being spoken.
-            callback_group: Optional callback group for action client.
-        """
+        """Initialize the TTS client."""
         self._node = node
         self._dialogue_manager = dialogue_manager
         self._closed_captions_pub = closed_captions_pub
@@ -91,17 +81,7 @@ class TTSClient:
         priority: int = 128,
         on_complete: Optional[Callable[[], None]] = None
     ) -> bool:
-        """
-        Send text to TTS engine.
-
-        Args:
-            text: Text to speak.
-            priority: Priority level for expression.
-            on_complete: Optional callback when speech completes.
-
-        Returns:
-            True if goal was sent, False if TTS unavailable.
-        """
+        """Send text to TTS engine."""
         if not self._tts_client:
             self._node.get_logger().warn('[TTS] No TTS client available')
             return False

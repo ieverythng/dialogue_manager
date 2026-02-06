@@ -1,18 +1,19 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-from setuptools import find_packages, setup
 from glob import glob
 
-NAME = "dialogue_manager"
+from setuptools import find_packages, setup
+
+NAME = 'dialogue_manager'
 
 setup(
     name=NAME,
-    version="0.2.0",
-    license="Apache-2.0",
-    description="ROS4HRI-compatible dialogue manager",
-    author="todo",
-    author_email="todo@todo.todo",
+    version='0.2.0',
+    license='Apache-2.0',
+    description='ROS4HRI-compatible dialogue manager',
+    author='todo',
+    author_email='todo@todo.todo',
     packages=find_packages(exclude=['test']),
     data_files=[
         ('share/' + NAME, ['package.xml']),

@@ -25,10 +25,10 @@ from chatbot_msgs.msg import DialogueRole
 class DialogueState(Enum):
     """State of a dialogue session."""
 
-    PENDING = "pending"  # Dialogue created but not yet started with chatbot
-    ACTIVE = "active"  # Dialogue is active and processing
-    WAITING_RESPONSE = "waiting_response"  # Waiting for chatbot response
-    COMPLETED = "completed"  # Dialogue has finished
+    PENDING = 'pending'  # Dialogue created but not yet started with chatbot
+    ACTIVE = 'active'  # Dialogue is active and processing
+    WAITING_RESPONSE = 'waiting_response'  # Waiting for chatbot response
+    COMPLETED = 'completed'  # Dialogue has finished
 
 
 @dataclass
@@ -40,8 +40,8 @@ class Dialogue:
     """
 
     role: DialogueRole
-    person_id: str = ""
-    group_id: str = ""
+    person_id: str = ''
+    group_id: str = ''
     priority: int = 128
     state: DialogueState = DialogueState.PENDING
     dialogue_id: UUID = field(default_factory=uuid4)  # Internal tracking ID
@@ -51,7 +51,7 @@ class Dialogue:
     def __post_init__(self):
         """Validate priority range."""
         if not 0 <= self.priority <= 255:
-            raise ValueError(f"Priority must be 0-255, got {self.priority}")
+            raise ValueError(f'Priority must be 0-255, got {self.priority}')
 
 
 class DialogueManager:

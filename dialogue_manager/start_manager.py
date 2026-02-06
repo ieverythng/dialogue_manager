@@ -21,11 +21,9 @@
 #
 ####################################################################
 
-import rclpy
-
-from rclpy.executors import MultiThreadedExecutor
-
 import dialogue_manager.manager_node as manager_node
+import rclpy
+from rclpy.executors import MultiThreadedExecutor
 
 
 def main():
@@ -38,7 +36,7 @@ def main():
     try:
         skill_executor.spin()
     except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
-        print("Goodbye!")
+        print('Goodbye!')
         node.destroy_node()
 
 
