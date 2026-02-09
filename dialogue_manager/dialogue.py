@@ -112,3 +112,7 @@ class DialogueManager:
     def clear_expression_priority(self) -> None:
         """Clear the expression priority (no expression running)."""
         self._current_expression_priority = -1
+
+    def clear_all(self) -> None:
+        """Clear all active dialogues."""
+        self._dialogues.clear()

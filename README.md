@@ -10,6 +10,7 @@ The Dialogue Manager:
 - Exposes three high-level skills: `chat`, `ask`, and `say`
 - Supports multi-modal expressions with synchronized gestures and expressions
 
+
 ```mermaid
 graph LR
     subgraph "Dialogue Manager"
@@ -69,14 +70,6 @@ All topics/services exist only in `active` state. Actions exist in both `configu
 
 ### Action Servers
 
-```mermaid
-graph TB
-    subgraph "Skill Actions"
-        CHAT["/skill/chat<br/>Chat.action"]
-        ASK["/skill/ask<br/>Ask.action"]
-        SAY["/skill/say<br/>Say.action"]
-    end
-```
 
 | Action | Interface | Description |
 |--------|-----------|-------------|
@@ -102,19 +95,7 @@ graph TB
 ## Launch
 
 ```bash
-ros2 launch dialogue_manager dialogue_manager.launch.py activate:=true chatbot:=chatbot_rasa
+ros2 launch dialogue_manager dialogue_manager.launch.py
 ```
 
-## Example
 
-```bash
-# Install dependencies
-sudo apt install pal-alum-audio-capture pal-alum-asr-vosk pal-alum-chatbot-rasa-default-models-en-gb pal-alum-tts-engine
-
-# In separate terminals:
-ros2 launch audio_capture capture.launch.xml audio_topic:=channel0 format:=wave
-ros2 launch chatbot_rasa chatbot_rasa.launch.py
-ros2 launch tts_engine tts_engine.launch.py
-ros2 launch dialogue_manager dialogue_manager.launch.py activate:=true chatbot:=chatbot_rasa
-ros2 launch asr_vosk asr_vosk.launch.py
-```
