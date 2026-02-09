@@ -2,6 +2,14 @@
 Changelog for package dialogue_manager
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Forthcoming
+-----------
+* add tests
+* linting
+* fix dialogue ID. First interactions with chatbot_llm are now working
+* refactoring -- splitting manager_core.py into smaller files
+* Contributors: Séverin Lemaignan
+
 0.2.0 (2026-02-05)
 ------------------
 * initial implementation, done by Claude Opus 4.5
