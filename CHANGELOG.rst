@@ -2,8 +2,8 @@
 Changelog for package dialogue_manager
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
+0.3.0 (2026-02-09)
+------------------
 * add tests
 * linting
 * fix dialogue ID. First interactions with chatbot_llm are now working
