@@ -15,6 +15,7 @@
 """Skill action servers for the Dialogue Manager."""
 
 import json
+import time
 from typing import Optional
 
 from chatbot_msgs.msg import DialogueRole
@@ -174,7 +175,7 @@ class SkillServers:
         result = Chat.Result()
 
         # Check chatbot availability
-        if not self._chatbot_client.is_available(timeout_sec=0.1):
+        if not self._chatbot_client.is_available(timeout_sec=1.0):
             result.result.error_code = 134  # ENOTSUP
             result.result.error_msg = 'Chatbot not configured'
             self._node.get_logger().warn('[CHAT] Aborted: chatbot not available')
@@ -202,6 +203,14 @@ class SkillServers:
             goal_handle.abort()
             return result
 
+        # Extract chatbot goal ID and assign to dialogue
+        from uuid import UUID as PyUUID
+        chatbot_goal_id = PyUUID(bytes=bytes(chatbot_handle.goal_id.uuid))
+        dialogue.chatbot_goal_id = chatbot_goal_id
+        self._node.get_logger().debug(
+            f'[CHAT] Assigned chatbot_goal_id={chatbot_goal_id} to dialogue'
+        )
+
         dialogue.state = DialogueState.ACTIVE
         self._node.get_logger().info(f'[CHAT] Dialogue {dialogue.dialogue_id} now ACTIVE')
 
@@ -222,7 +231,7 @@ class SkillServers:
         # Wait for dialogue to complete
         self._node.get_logger().debug('[CHAT] Waiting for completion or cancellation')
         while not goal_handle.is_cancel_requested:
-            await self._node.get_clock().sleep_for_sec(0.1)
+            time.sleep(0.1)
             if dialogue.state == DialogueState.COMPLETED:
                 break
 
@@ -289,6 +298,14 @@ class SkillServers:
             goal_handle.abort()
             return result
 
+        # Extract chatbot goal ID and assign to dialogue
+        from uuid import UUID as PyUUID
+        chatbot_goal_id = PyUUID(bytes=bytes(chatbot_handle.goal_id.uuid))
+        dialogue.chatbot_goal_id = chatbot_goal_id
+        self._node.get_logger().debug(
+            f'[ASK] Assigned chatbot_goal_id={chatbot_goal_id} to dialogue'
+        )
+
         dialogue.state = DialogueState.ACTIVE
 
         # Speak the question
@@ -297,7 +314,7 @@ class SkillServers:
 
         # Wait for dialogue completion
         while not goal_handle.is_cancel_requested:
-            await self._node.get_clock().sleep_for_sec(0.1)
+            time.sleep(0.1)
             if dialogue.state == DialogueState.COMPLETED:
                 break
 
@@ -385,7 +402,7 @@ class SkillServers:
         while not goal_handle.is_cancel_requested:
             if tts_result_future.done():
                 break
-            await self._node.get_clock().sleep_for_sec(0.05)
+            time.sleep(0.05)
 
         self._dialogue_manager.clear_expression_priority()
 
