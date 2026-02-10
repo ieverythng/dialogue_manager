@@ -102,6 +102,10 @@ class MockTTSNode(Node):
         """Return list of spoken texts."""
         return self._spoken_texts
 
+    def destroy(self) -> None:
+        """Clean up the action server before destroying the node."""
+        self._tts_server.destroy()
+
 
 class MockChatbotNode(Node):
     """Mock chatbot that provides start_dialogue action and dialogue_interaction service."""
@@ -169,6 +173,10 @@ class MockChatbotNode(Node):
     def shutdown(self):
         """Stop the chatbot node."""
         self._running = False
+
+    def destroy(self) -> None:
+        """Clean up the action server before destroying the node."""
+        self._dialogue_server.destroy()
 
     def _handle_interaction(self, request, response):
         """Handle dialogue interaction - return configured response."""
@@ -289,9 +297,30 @@ class SayActionClient(Node):
 @pytest.fixture(scope='module')
 def rclpy_context():
     """Initialize rclpy for the test module."""
+    import os
+    import threading
+    import time as time_module
+
+    def force_exit_timeout():
+        """
+        Force exit after a short delay if still alive.
+
+        This is needed because ROS2's MultiThreadedExecutor creates non-daemon
+        ThreadPoolExecutor threads that can keep the process alive even after
+        rclpy.shutdown() completes.
+        """
+        time_module.sleep(2.0)
+        os._exit(0)
+
+    # Create a daemon thread that will force exit if the process hangs
+    exit_thread = threading.Thread(target=force_exit_timeout, daemon=True)
+
     rclpy.init()
     yield
     rclpy.shutdown()
+    # Start the exit timeout thread - if the process exits normally,
+    # this daemon thread will be killed. If it hangs, this forces exit.
+    exit_thread.start()
 
 
 # =============================================================================
@@ -662,11 +691,19 @@ class TestFullSpeechFlow:
         spoken = mock_tts.get_spoken_texts()
         assert 'Hello from chatbot!' in spoken
 
+        # Cleanup
         mock_chatbot.shutdown()
-        time.sleep(0.5)
+        # Spin to allow the _execute_dialogue callback to check _running and exit
+        for _ in range(10):
+            executor.spin_once(timeout_sec=0.1)
         executor.shutdown()
+        # Shutdown the internal ThreadPoolExecutor to release non-daemon threads
+        if hasattr(executor, '_executor'):
+            executor._executor.shutdown(wait=False, cancel_futures=True)
         dm_node.destroy_node()
+        mock_chatbot.destroy()
         mock_chatbot.destroy_node()
+        mock_tts.destroy()
         mock_tts.destroy_node()
         mock_asr.destroy_node()
         chat_client.destroy_node()
@@ -734,11 +771,19 @@ class TestFullSpeechFlow:
         intents = collector.get_intents()
         assert any(i.intent == 'greet' for i in intents)
 
+        # Cleanup
         mock_chatbot.shutdown()
-        time.sleep(0.5)
+        # Spin to allow the _execute_dialogue callback to check _running and exit
+        for _ in range(10):
+            executor.spin_once(timeout_sec=0.1)
         executor.shutdown()
+        # Shutdown the internal ThreadPoolExecutor to release non-daemon threads
+        if hasattr(executor, '_executor'):
+            executor._executor.shutdown(wait=False, cancel_futures=True)
         dm_node.destroy_node()
+        mock_chatbot.destroy()
         mock_chatbot.destroy_node()
+        mock_tts.destroy()
         mock_tts.destroy_node()
         mock_asr.destroy_node()
         chat_client.destroy_node()
