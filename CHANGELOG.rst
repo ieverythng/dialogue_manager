@@ -2,8 +2,8 @@
 Changelog for package dialogue_manager
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
+0.3.1 (2026-02-10)
+------------------
 * mark pkg architecture_independent
 * test: make sure integration tests properly shutdown
 * extend tests to chatbot interactions
