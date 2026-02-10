@@ -2,6 +2,14 @@
 Changelog for package dialogue_manager
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Forthcoming
+-----------
+* mark pkg architecture_independent
+* test: make sure integration tests properly shutdown
+* extend tests to chatbot interactions
+* add integration tests
+* Contributors: Séverin Lemaignan
+
 0.3.0 (2026-02-09)
 ------------------
 * add tests
