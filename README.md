@@ -1,5 +1,7 @@
 # dialogue_manager
 
+Bla bla bla
+
 A ROS2 lifecycle node that handles multi-modal communication between the robot and humans.
 
 ## Overview
