@@ -12,8 +12,8 @@ setup(
     version='0.3.1',
     license='Apache-2.0',
     description='ROS4HRI-compatible dialogue manager',
-    author='todo',
-    author_email='todo@todo.todo',
+    author='Severin Lemaignan',
+    author_email='severin.lemaignan@iiia.csic.es',
     packages=find_packages(exclude=['test']),
     data_files=[
         ('share/' + NAME, ['package.xml']),
@@ -31,7 +31,10 @@ setup(
     zip_safe=True,
     entry_points={
         'console_scripts': [
-            'start_manager = ' + NAME + '.start_manager:main'
+            'start_manager = ' + NAME + '.start_manager:main',
+            # Temporary compatibility alias while stack launches migrate off the
+            # legacy executable name.
+            'dialogue_manager_node = ' + NAME + '.start_manager:main',
         ],
     },
 )
