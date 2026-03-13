@@ -1,8 +1,12 @@
 # dialogue_manager
 
-Bla bla bla
+`dialogue_manager` is the canonical ROS4HRI lifecycle package for dialogue
+tracking and the communication skills `chat`, `ask`, and `say`.
 
-A ROS2 lifecycle node that handles multi-modal communication between the robot and humans.
+In this workspace it is the upstream-style runtime that sits between speech
+input and the `chatbot_llm` backend. The NAO-specific execution endpoints stay
+outside this package; for example, `/nao/say` remains owned by
+`nao_say_skill`.
 
 ## Overview
 
@@ -21,16 +25,26 @@ graph LR
         SAY["/skill/say"]
         DM["Dialogue<br/>Tracking"]
     end
-    
+  
     MC["Mission<br/>Controller"] --> CHAT & ASK & SAY
-    
+  
     SPEECH["/humans/voices/*/speech"] --> DM
-    
+  
     DM --> CB["Chatbot<br/>Engine"]
     DM --> TTS["TTS<br/>Engine"]
     DM --> INT["/intents"]
     DM --> CC["~/closed_captions"]
 ```
+
+## Migration Notes
+
+- backend prefix should point to `chatbot_llm` in the current migration launch
+- this package is now the active upstream-aligned runtime in `src/`
+- the old local bridge implementation was archived under
+  `.migration_backups/dialogue_manager_legacy_bridge_20260313/`
+- a temporary executable alias `dialogue_manager_node` is still installed so
+  older launch files do not fail immediately while the launch migration is in
+  progress
 
 ## ROS API
 
@@ -100,4 +114,8 @@ All topics/services exist only in `active` state. Actions exist in both `configu
 ros2 launch dialogue_manager dialogue_manager.launch.py
 ```
 
+Or, in the migration stack:
 
+```bash
+ros2 launch nao_chatbot nao_chatbot_ros4hri_migration.launch.py
+```
