@@ -25,11 +25,11 @@ graph LR
         SAY["/skill/say"]
         DM["Dialogue<br/>Tracking"]
     end
-  
+
     MC["Mission<br/>Controller"] --> CHAT & ASK & SAY
-  
+
     SPEECH["/humans/voices/*/speech"] --> DM
-  
+
     DM --> CB["Chatbot<br/>Engine"]
     DM --> TTS["TTS<br/>Engine"]
     DM --> INT["/intents"]
