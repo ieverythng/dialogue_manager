@@ -24,7 +24,10 @@ setup(
         ('share/' + NAME + '/module', ['module/' + NAME + '_module.yaml']),
         ('share/ament_index/resource_index/pal_configuration.' + NAME,
             ['config/' + NAME]),
-        ('share/' + NAME + '/config', ['config/00-defaults.yml']),
+        ('share/' + NAME + '/config', [
+            'config/00-defaults.yml',
+            'config/00-default_actions.yaml',
+        ]),
     ],
     tests_require=['pytest'],
     install_requires=['setuptools'],

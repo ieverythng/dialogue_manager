@@ -25,9 +25,9 @@
     # Default max time for markup actions (seconds)
     markup_action_timeout: 10.0
 
-    # Paths to JSON files defining markup actions/variables
+    # Paths to YAML files defining markup actions
     markup_libraries:
-      - "config/00-default_markup_libraries.json"
+      - "config/00-default_actions.yaml"
 
     # Markup actions to skip during expression execution
     disabled_markup_actions:

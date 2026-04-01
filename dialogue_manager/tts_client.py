@@ -14,6 +14,7 @@
 
 """TTS client for the Dialogue Manager."""
 
+import threading
 from typing import Callable, Optional
 
 from hri_actions_msgs.msg import ClosedCaption
@@ -115,6 +116,26 @@ class TTSClient:
             self._node.get_logger().warn('[TTS] Server not available (timeout after 1s)')
             self._dialogue_manager.clear_expression_priority()
             return False
+
+    def speak_and_wait(
+        self,
+        text: str,
+        priority: int = 128,
+        cancel_event: threading.Event | None = None,
+    ) -> bool:
+        """Send text to TTS and block until complete or cancelled."""
+        done_event = threading.Event()
+
+        success = self.speak(text, priority, on_complete=done_event.set)
+        if not success:
+            return False
+
+        while not done_event.is_set():
+            if cancel_event and cancel_event.is_set():
+                return False
+            done_event.wait(timeout=0.05)
+
+        return True
 
     def _on_goal_response(self, future) -> None:
         """Handle TTS goal acceptance."""

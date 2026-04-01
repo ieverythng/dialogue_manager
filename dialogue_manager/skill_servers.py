@@ -15,6 +15,7 @@
 """Skill action servers for the Dialogue Manager."""
 
 import json
+import threading
 import time
 from typing import Optional
 
@@ -25,10 +26,10 @@ from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from rclpy.publisher import Publisher
-from tts_msgs.action import TTS
 
 from .chatbot_client import ChatbotClient
 from .dialogue import Dialogue, DialogueManager, DialogueState
+from .markup.executor import ExpressionExecutor
 from .tts_client import TTSClient
 
 
@@ -45,7 +46,8 @@ class SkillServers:
         dialogue_manager: DialogueManager,
         chatbot_client: ChatbotClient,
         tts_client: TTSClient,
-        closed_captions_pub: Publisher,
+        expression_executor: Optional[ExpressionExecutor] = None,
+        closed_captions_pub: Optional[Publisher] = None,
         callback_group: Optional[ReentrantCallbackGroup] = None
     ):
         """Initialize skill servers."""
@@ -53,6 +55,7 @@ class SkillServers:
         self._dialogue_manager = dialogue_manager
         self._chatbot_client = chatbot_client
         self._tts_client = tts_client
+        self._expression_executor = expression_executor
         self._closed_captions_pub = closed_captions_pub
         self._callback_group = callback_group
 
@@ -366,58 +369,56 @@ class SkillServers:
             goal_handle.abort()
             return result
 
-        # Publish closed caption
+        # Publish closed caption with plain text (markup stripped)
         caption = ClosedCaption()
         caption.speaker_id = ClosedCaption.SPEAKER_ID_SYSTEM
-        caption.text = request.input
+        if self._expression_executor:
+            caption.text = self._expression_executor.get_plain_text(
+                request.input
+            )
+        else:
+            caption.text = request.input
         self._closed_captions_pub.publish(caption)
 
-        # Send to TTS using internal action client for async control
-        tts_goal = TTS.Goal()
-        tts_goal.input = request.input
+        # Execute expression with markup processing
+        cancel_event = threading.Event()
 
-        # We need direct access to TTS client's internal client for async
-        # This is a simplification - in production we'd refactor TTSClient
-        tts_client_internal = self._tts_client._tts_client
-        if not tts_client_internal:
-            result.result.error_code = 134
-            result.result.error_msg = 'TTS client not initialized'
+        def _check_cancel():
+            """Poll for goal cancellation in a background thread."""
+            while not cancel_event.is_set():
+                if goal_handle.is_cancel_requested:
+                    cancel_event.set()
+                    return
+                time.sleep(0.05)
+
+        cancel_thread = threading.Thread(target=_check_cancel, daemon=True)
+        cancel_thread.start()
+
+        try:
+            if self._expression_executor:
+                success = self._expression_executor.execute_text(
+                    request.input,
+                    priority=priority,
+                    cancel_event=cancel_event,
+                )
+            else:
+                success = self._tts_client.speak_and_wait(
+                    request.input, priority, cancel_event
+                )
+        finally:
+            cancel_event.set()  # Stop the cancel-check thread
+            cancel_thread.join(timeout=1.0)
             self._dialogue_manager.clear_expression_priority()
-            goal_handle.abort()
-            return result
-
-        send_future = tts_client_internal.send_goal_async(tts_goal)
-        tts_handle = await send_future
-
-        if not tts_handle or not tts_handle.accepted:
-            result.result.error_code = 134
-            result.result.error_msg = 'TTS rejected goal'
-            self._dialogue_manager.clear_expression_priority()
-            goal_handle.abort()
-            return result
-
-        # Wait for TTS completion
-        tts_result_future = tts_handle.get_result_async()
-
-        while not goal_handle.is_cancel_requested:
-            if tts_result_future.done():
-                break
-            time.sleep(0.05)
-
-        self._dialogue_manager.clear_expression_priority()
 
         if goal_handle.is_cancel_requested:
-            tts_handle.cancel_goal_async()
             goal_handle.canceled()
             result.result.error_code = 125
             return result
 
-        try:
-            tts_result = tts_result_future.result()
-            if tts_result.result.error_msg:
-                result.result.error_msg = tts_result.result.error_msg
-        except Exception as e:
-            self._node.get_logger().warn(f'[SAY] TTS error: {e}')
+        if not success:
+            result.result.error_msg = 'Expression execution failed'
+            goal_handle.abort()
+            return result
 
         self._node.get_logger().info('[SAY] Completed successfully')
         goal_handle.succeed()

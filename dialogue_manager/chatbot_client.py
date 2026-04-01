@@ -28,6 +28,7 @@ from std_msgs.msg import Bool
 from unique_identifier_msgs.msg import UUID as UUIDMsg
 
 from .dialogue import Dialogue, DialogueManager, DialogueState
+from .markup.executor import ExpressionExecutor
 from .tts_client import TTSClient
 
 
@@ -49,14 +50,16 @@ class ChatbotClient:
         node: Node,
         dialogue_manager: DialogueManager,
         tts_client: TTSClient,
-        intents_pub: Publisher,
-        waiting_chatbot_pub: Publisher,
+        expression_executor: Optional[ExpressionExecutor] = None,
+        intents_pub: Optional[Publisher] = None,
+        waiting_chatbot_pub: Optional[Publisher] = None,
         callback_group: Optional[ReentrantCallbackGroup] = None
     ):
         """Initialize the chatbot client."""
         self._node = node
         self._dialogue_manager = dialogue_manager
         self._tts_client = tts_client
+        self._expression_executor = expression_executor
         self._intents_pub = intents_pub
         self._waiting_chatbot_pub = waiting_chatbot_pub
         self._callback_group = callback_group
@@ -249,10 +252,13 @@ class ChatbotClient:
                 )
                 self._intents_pub.publish(intent)
 
-        # Speak response
+        # Speak response (with markup processing if executor available)
         if response.response:
             self._node.get_logger().info('[CHATBOT RESPONSE] Speaking via TTS')
-            self._tts_client.speak(response.response)
+            if self._expression_executor:
+                self._expression_executor.execute_text(response.response)
+            else:
+                self._tts_client.speak(response.response)
         else:
             self._node.get_logger().debug('[CHATBOT RESPONSE] No text to speak')
 

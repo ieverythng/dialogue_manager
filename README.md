@@ -46,7 +46,7 @@ All topics/services exist only in `active` state. Actions exist in both `configu
 | `chatbot_response_timeout` | float | `5.0` | Max wait for chatbot response (s) |
 | `multi_modal_expression_timeout` | float | `60.0` | Max expression duration (s) |
 | `markup_action_timeout` | float | `10.0` | Default markup action timeout (s) |
-| `markup_libraries` | string[] | `["config/00-default_markup_libraries.json"]` | Markup definition files |
+| `markup_libraries` | string[] | `["config/00-default_actions.yaml"]` | Markup definition files |
 | `disabled_markup_actions` | string[] | `["motion"]` | Markup actions to skip |
 
 ### Topics
@@ -91,6 +91,29 @@ All topics/services exist only in `active` state. Actions exist in both `configu
 | Service | Interface | Description |
 |---------|-----------|-------------|
 | `<chatbot>/dialogue_interaction` | `chatbot_msgs/DialogueInteraction` | Send input, get response |
+
+## Multi-modal expression markup
+
+The `/skill/say` action and chatbot responses support a markup language
+that synchronizes TTS with robot actions (facial expressions, gestures,
+LED effects, gaze). For example:
+
+```
+<set expression(happy)> <start motion(wave)> Hello! <wait motion timeout=1> <set expression(neutral)>
+```
+
+This will make the robot say "Hello!" while waving with a happy
+expression, wait for the wave to finish (up to 1 second), then return to
+a neutral expression.
+
+See [doc/TEXT_MARKUP.md](doc/TEXT_MARKUP.md) for the full specification,
+including verb semantics, available actions, variable substitution, and
+the built-in `<pause(N)>` action.
+
+Available actions are defined in `config/00-default_actions.yaml` and can
+be extended by adding YAML files to the `markup_libraries` parameter.
+Individual actions can be disabled via `disabled_markup_actions` (e.g.
+`motion` is disabled by default for safety).
 
 ## Launch
 

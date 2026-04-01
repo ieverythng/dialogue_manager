@@ -23,6 +23,7 @@ from std_msgs.msg import Bool, String
 
 from .chatbot_client import ChatbotClient
 from .dialogue import DialogueManager
+from .markup import ActionLibrary, ExpressionExecutor
 from .skill_servers import SkillServers
 from .speech_handler import SpeechHandler
 from .tts_client import TTSClient
@@ -52,6 +53,8 @@ class DialogueManagerNode(LifecycleNode):
         self._chatbot_client: ChatbotClient | None = None
         self._speech_handler: SpeechHandler | None = None
         self._skill_servers: SkillServers | None = None
+        self._action_library: ActionLibrary | None = None
+        self._expression_executor: ExpressionExecutor | None = None
 
         # Publishers (created in on_configure)
         self._closed_captions_pub = None
@@ -101,7 +104,7 @@ class DialogueManagerNode(LifecycleNode):
             ParameterDescriptor(description='Default max time for markup action (s)')
         )
         self.declare_parameter(
-            'markup_libraries', ['config/00-default_markup_libraries.json'],
+            'markup_libraries', ['config/00-default_actions.yaml'],
             ParameterDescriptor(description='Paths to markup action definitions')
         )
         self.declare_parameter(
@@ -141,6 +144,42 @@ class DialogueManagerNode(LifecycleNode):
         self._tts_client.create_client()
         self.get_logger().debug('[CONFIGURE] TTS client created')
 
+        # Create action library and expression executor
+        markup_libs = (
+            self.get_parameter('markup_libraries')
+            .get_parameter_value().string_array_value
+        )
+        disabled_actions = (
+            self.get_parameter('disabled_markup_actions')
+            .get_parameter_value().string_array_value
+        )
+        action_timeout = (
+            self.get_parameter('markup_action_timeout')
+            .get_parameter_value().double_value
+        )
+        expr_timeout = (
+            self.get_parameter('multi_modal_expression_timeout')
+            .get_parameter_value().double_value
+        )
+
+        self._action_library = ActionLibrary(
+            _node=self,
+            _disabled_actions=list(disabled_actions),
+            _default_timeout=action_timeout,
+            _callback_group=self._callback_group,
+        )
+        self._action_library.load(list(markup_libs))
+        self._action_library.create_clients()
+        self.get_logger().debug('[CONFIGURE] Action library created')
+
+        self._expression_executor = ExpressionExecutor(
+            node=self,
+            tts_client=self._tts_client,
+            action_library=self._action_library,
+            expression_timeout=expr_timeout,
+        )
+        self.get_logger().debug('[CONFIGURE] Expression executor created')
+
         # Create chatbot client (if configured)
         chatbot = self.get_parameter('chatbot').get_parameter_value().string_value
         if chatbot:
@@ -148,6 +187,7 @@ class DialogueManagerNode(LifecycleNode):
                 node=self,
                 dialogue_manager=self._dialogue_manager,
                 tts_client=self._tts_client,
+                expression_executor=self._expression_executor,
                 intents_pub=self._intents_pub,
                 waiting_chatbot_pub=self._waiting_chatbot_pub,
                 callback_group=self._callback_group
@@ -174,6 +214,7 @@ class DialogueManagerNode(LifecycleNode):
             dialogue_manager=self._dialogue_manager,
             chatbot_client=self._chatbot_client,
             tts_client=self._tts_client,
+            expression_executor=self._expression_executor,
             closed_captions_pub=self._closed_captions_pub,
             callback_group=self._callback_group
         )
@@ -235,6 +276,8 @@ class DialogueManagerNode(LifecycleNode):
 
         if self._skill_servers:
             self._skill_servers.destroy()
+        if self._action_library:
+            self._action_library.destroy()
         if self._tts_client:
             self._tts_client.destroy()
         if self._chatbot_client:
