@@ -19,9 +19,6 @@ setup(
         ('share/' + NAME, ['package.xml']),
         ('share/ament_index/resource_index/packages', ['res/' + NAME]),
         ('share/' + NAME + '/launch', glob('launch/*.launch.py')),
-        ('share/ament_index/resource_index/pal_system_module',
-         ['module/' + NAME]),
-        ('share/' + NAME + '/module', ['module/' + NAME + '_module.yaml']),
         ('share/ament_index/resource_index/pal_configuration.' + NAME,
             ['config/' + NAME]),
         ('share/' + NAME + '/config', [
