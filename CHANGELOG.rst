@@ -2,6 +2,14 @@
 Changelog for package dialogue_manager
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Forthcoming
+-----------
+* markup: properly handle nested ROS2 fields
+* resolve markup action list relative to package share/ folder
+* remove PAL's module
+* document and implement markup processing
+* Contributors: Séverin Lemaignan
+
 0.3.1 (2026-02-10)
 ------------------
 * mark pkg architecture_independent
