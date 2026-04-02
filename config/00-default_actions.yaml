@@ -7,12 +7,20 @@
 #   $name - use the named argument "name"
 #   #N$name - try positional N first, then named "name"
 #   ...|default - fallback value if the argument is not provided
+#
+# Fields can be nested to match the structure of the ROS2 message.
+# For example, if SetExpression has a nested 'expression' message with
+# a string field 'expression', the config should mirror that nesting:
+#   fields:
+#     expression:
+#       expression: "#1$name|neutral"
 
 expression:
   type: interaction_skills/msg/SetExpression
   path: /skill/set_expression
   fields:
-    expression: "#1$name|neutral"
+    expression:
+      expression: "#1$name|neutral"
 
 leds:
   type: interaction_skills/action/DoLedEffect

@@ -205,6 +205,190 @@ class TestExecutorActions:
         mock_publisher.publish.assert_called_once()
 
 
+class TestExecutorNestedFields:
+    """Tests for dispatch with nested field structures."""
+
+    def test_set_publishes_nested_fields(self):
+        """Set verb correctly resolves nested field templates."""
+        mock_publisher = MagicMock()
+        mock_msg_class = MagicMock()
+        mock_msg_instance = MagicMock()
+        mock_msg_class.return_value = mock_msg_instance
+
+        # Nested fields: expression.expression = "#1$name|neutral"
+        defn = ActionDefinition(
+            name='expression',
+            type_str='interaction_skills/msg/SetExpression',
+            path='/skill/set_expression',
+            fields={'expression': {'expression': '#1$name|neutral'}},
+            interface_kind='msg',
+            interface_class=mock_msg_class,
+        )
+
+        action_lib = MagicMock(spec=ActionLibrary)
+        action_lib.get_definition.return_value = defn
+        action_lib.get_client.return_value = mock_publisher
+        action_lib.default_timeout = 10.0
+
+        executor = _make_executor(action_library=action_lib)
+
+        expr = Expression(segments=(
+            MarkupAction(
+                verb='set', name='expression',
+                positional_args=('happy',)
+            ),
+        ))
+
+        with patch(
+            'dialogue_manager.markup.executor.set_message_fields'
+        ) as mock_set:
+            result = executor.execute(expr)
+
+        assert result is True
+        mock_publisher.publish.assert_called_once()
+        # Verify set_message_fields received the nested dict
+        mock_set.assert_called_once_with(
+            mock_msg_instance,
+            {'expression': {'expression': 'happy'}},
+        )
+
+    def test_set_nested_fields_with_default(self):
+        """Nested fields use defaults when no args provided."""
+        mock_publisher = MagicMock()
+        mock_msg_class = MagicMock()
+        mock_msg_instance = MagicMock()
+        mock_msg_class.return_value = mock_msg_instance
+
+        defn = ActionDefinition(
+            name='expression',
+            type_str='interaction_skills/msg/SetExpression',
+            path='/skill/set_expression',
+            fields={'expression': {'expression': '#1$name|neutral'}},
+            interface_kind='msg',
+            interface_class=mock_msg_class,
+        )
+
+        action_lib = MagicMock(spec=ActionLibrary)
+        action_lib.get_definition.return_value = defn
+        action_lib.get_client.return_value = mock_publisher
+        action_lib.default_timeout = 10.0
+
+        executor = _make_executor(action_library=action_lib)
+
+        # No positional args -> default "neutral"
+        expr = Expression(segments=(
+            MarkupAction(verb='set', name='expression'),
+        ))
+
+        with patch(
+            'dialogue_manager.markup.executor.set_message_fields'
+        ) as mock_set:
+            result = executor.execute(expr)
+
+        assert result is True
+        mock_set.assert_called_once_with(
+            mock_msg_instance,
+            {'expression': {'expression': 'neutral'}},
+        )
+
+    def test_field_structure_mismatch_gives_informative_error(self):
+        """Mismatched field structure logs a warning with helpful context."""
+        mock_publisher = MagicMock()
+        mock_msg_class = MagicMock()
+        mock_msg_instance = MagicMock()
+        mock_msg_class.return_value = mock_msg_instance
+
+        # Flat field — will cause set_message_fields to fail if the
+        # actual message expects a nested structure
+        defn = ActionDefinition(
+            name='expression',
+            type_str='interaction_skills/msg/SetExpression',
+            path='/skill/set_expression',
+            fields={'expression': '#1$name|neutral'},
+            interface_kind='msg',
+            interface_class=mock_msg_class,
+        )
+
+        action_lib = MagicMock(spec=ActionLibrary)
+        action_lib.get_definition.return_value = defn
+        action_lib.get_client.return_value = mock_publisher
+        action_lib.default_timeout = 10.0
+
+        executor = _make_executor(action_library=action_lib)
+
+        expr = Expression(segments=(
+            MarkupAction(
+                verb='set', name='expression',
+                positional_args=('happy',)
+            ),
+        ))
+
+        with patch(
+            'dialogue_manager.markup.executor.set_message_fields',
+            side_effect=AttributeError(
+                "Value 'happy' is expected to be a dictionary but is a str"
+            ),
+        ):
+            result = executor.execute(expr)
+
+        # Expression continues (unknown/failed actions don't abort)
+        assert result is True
+        # Verify the warning includes helpful guidance
+        logger = executor._node.get_logger()
+        warn_msg = logger.warn.call_args[0][0]
+        assert 'YAML action definition' in warn_msg
+        assert 'nested fields' in warn_msg
+
+    def test_text_with_nested_set_action(self):
+        """Full expression: text + nested set action dispatches correctly."""
+        tts = MagicMock()
+        tts.speak_and_wait.return_value = True
+
+        mock_publisher = MagicMock()
+        mock_msg_class = MagicMock()
+        mock_msg_instance = MagicMock()
+        mock_msg_class.return_value = mock_msg_instance
+
+        defn = ActionDefinition(
+            name='expression',
+            type_str='interaction_skills/msg/SetExpression',
+            path='/skill/set_expression',
+            fields={'expression': {'expression': '#1$name|neutral'}},
+            interface_kind='msg',
+            interface_class=mock_msg_class,
+        )
+
+        action_lib = MagicMock(spec=ActionLibrary)
+        action_lib.get_definition.return_value = defn
+        action_lib.get_client.return_value = mock_publisher
+        action_lib.default_timeout = 10.0
+
+        executor = _make_executor(tts_client=tts, action_library=action_lib)
+
+        # Mimics: "Hello<set expression(happy)>what are you doing"
+        expr = Expression(segments=(
+            TextSegment(text='Hello'),
+            MarkupAction(
+                verb='set', name='expression',
+                positional_args=('happy',)
+            ),
+            TextSegment(text='what are you doing'),
+        ))
+
+        with patch(
+            'dialogue_manager.markup.executor.set_message_fields'
+        ) as mock_set:
+            result = executor.execute(expr)
+
+        assert result is True
+        assert tts.speak_and_wait.call_count == 2
+        mock_publisher.publish.assert_called_once()
+        mock_set.assert_called_once_with(
+            mock_msg_instance,
+            {'expression': {'expression': 'happy'}},
+        )
+
+
 class TestExecutorTextParsing:
     """Tests for execute_text (parsing + execution)."""
 

@@ -447,4 +447,14 @@ def _set_fields(msg: Any, fields: dict) -> None:
     """Set fields on a ROS2 message, filtering out None values."""
     filtered = {k: v for k, v in fields.items() if v is not None}
     if filtered:
-        set_message_fields(msg, filtered)
+        try:
+            set_message_fields(msg, filtered)
+        except AttributeError as e:
+            # Provide a helpful error when a field expects a nested message
+            # but received a scalar (common misconfiguration in YAML).
+            raise TypeError(
+                f'Failed to set fields on {type(msg).__name__}: {e}. '
+                f'This usually means the YAML action definition needs '
+                f'nested fields to match the ROS2 message structure. '
+                f'Resolved fields: {filtered}'
+            ) from e
