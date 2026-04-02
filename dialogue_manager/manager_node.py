@@ -14,6 +14,9 @@
 
 """Main Dialogue Manager ROS2 node."""
 
+import os
+
+from ament_index_python.packages import get_package_share_directory
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from hri_actions_msgs.msg import ClosedCaption, Intent
 from rcl_interfaces.msg import ParameterDescriptor
@@ -145,10 +148,12 @@ class DialogueManagerNode(LifecycleNode):
         self.get_logger().debug('[CONFIGURE] TTS client created')
 
         # Create action library and expression executor
-        markup_libs = (
-            self.get_parameter('markup_libraries')
+        pkg_share = get_package_share_directory('dialogue_manager')
+        markup_libs = [
+            os.path.join(pkg_share, p)
+            for p in self.get_parameter('markup_libraries')
             .get_parameter_value().string_array_value
-        )
+        ]
         disabled_actions = (
             self.get_parameter('disabled_markup_actions')
             .get_parameter_value().string_array_value
