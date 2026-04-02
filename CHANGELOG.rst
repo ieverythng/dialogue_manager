@@ -2,8 +2,8 @@
 Changelog for package dialogue_manager
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
+0.4.0 (2026-04-02)
+------------------
 * markup: properly handle nested ROS2 fields
 * resolve markup action list relative to package share/ folder
 * remove PAL's module
