@@ -16,6 +16,9 @@
 
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from hri_actions_msgs.msg import ClosedCaption, Intent
+from planner_common import parse_json_object
+from planner_common import PlannerDialogueAct
+from planner_common import truncate_text
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.lifecycle import LifecycleNode, State, TransitionCallbackReturn
@@ -62,6 +65,7 @@ class DialogueManagerNode(LifecycleNode):
 
         # Timers
         self._diag_timer = None
+        self._planner_dialogue_act_sub = None
 
         self._declare_parameters()
         self.get_logger().info('Dialogue Manager node created, awaiting configuration.')
@@ -107,6 +111,12 @@ class DialogueManagerNode(LifecycleNode):
         self.declare_parameter(
             'disabled_markup_actions', ['motion'],
             ParameterDescriptor(description='Markup actions to skip')
+        )
+        self.declare_parameter(
+            'planner_dialogue_act_topic', '/planner/dialogue_act',
+            ParameterDescriptor(
+                description='Planner-owned dialogue-act topic for asynchronous execution feedback.'
+            )
         )
 
     # =========================================================================
@@ -196,6 +206,21 @@ class DialogueManagerNode(LifecycleNode):
         # Subscribe to voices
         self._speech_handler.subscribe_to_voices()
 
+        planner_dialogue_act_topic = self.get_parameter(
+            'planner_dialogue_act_topic'
+        ).get_parameter_value().string_value
+        if planner_dialogue_act_topic:
+            self._planner_dialogue_act_sub = self.create_subscription(
+                String,
+                planner_dialogue_act_topic,
+                self._on_planner_dialogue_act,
+                10,
+            )
+            self.get_logger().info(
+                '[ACTIVATE] Planner dialogue acts subscribed on "%s"'
+                % planner_dialogue_act_topic
+            )
+
         # Start default chat if enabled
         if self.get_parameter('enable_default_chat').get_parameter_value().bool_value:
             if self._chatbot_client:
@@ -219,6 +244,9 @@ class DialogueManagerNode(LifecycleNode):
 
         # Unsubscribe from voices
         self._speech_handler.unsubscribe_all()
+        if self._planner_dialogue_act_sub is not None:
+            self.destroy_subscription(self._planner_dialogue_act_sub)
+            self._planner_dialogue_act_sub = None
 
         # Cancel active dialogues
         self._dialogue_manager.clear_all()
@@ -239,6 +267,9 @@ class DialogueManagerNode(LifecycleNode):
             self._tts_client.destroy()
         if self._chatbot_client:
             self._chatbot_client.destroy()
+        if self._planner_dialogue_act_sub is not None:
+            self.destroy_subscription(self._planner_dialogue_act_sub)
+            self._planner_dialogue_act_sub = None
 
         self.get_logger().info('Dialogue Manager shutdown complete.')
         return TransitionCallbackReturn.SUCCESS
@@ -274,3 +305,86 @@ class DialogueManagerNode(LifecycleNode):
         arr.header.stamp = self.get_clock().now().to_msg()
         arr.status = [status]
         self._diag_pub.publish(arr)
+
+    def _on_planner_dialogue_act(self, msg: String) -> None:
+        """Speak planner-owned asynchronous dialogue acts without duplicating chatbot acks."""
+        if self._tts_client is None:
+            self.get_logger().warn('[PLANNER ACT] Ignored because TTS client is unavailable')
+            return
+
+        payload = parse_json_object(msg.data)
+        if not payload:
+            self.get_logger().warn('[PLANNER ACT] Ignored malformed or empty payload')
+            return
+
+        dialogue_act = PlannerDialogueAct.from_payload(payload)
+        if dialogue_act.act == 'acknowledge':
+            self.get_logger().debug(
+                '[PLANNER ACT] Ignoring acknowledge act for goal_id=%s to avoid duplicate speech'
+                % dialogue_act.goal_id
+            )
+            return
+
+        if dialogue_act.act == 'explain_failure':
+            self.get_logger().warn(
+                '[PLANNER ACT] explain_failure suppressed for TTS goal_id=%s reason=%s text_hint=%s'
+                % (
+                    dialogue_act.goal_id,
+                    truncate_text(dialogue_act.reason or '', 2000),
+                    truncate_text(dialogue_act.text_hint or '', 500),
+                )
+            )
+            return
+
+        speech_text = _planner_dialogue_text(dialogue_act)
+        if not speech_text:
+            self.get_logger().debug(
+                '[PLANNER ACT] No speech text resolved for act=%s goal_id=%s'
+                % (dialogue_act.act, dialogue_act.goal_id)
+            )
+            return
+
+        self.get_logger().info(
+            '[PLANNER ACT] Speaking act=%s goal_id=%s await_user_response=%s'
+            % (
+                dialogue_act.act,
+                dialogue_act.goal_id,
+                dialogue_act.await_user_response,
+            )
+        )
+        self._tts_client.speak(
+            speech_text,
+            priority=_planner_tts_priority(dialogue_act.priority),
+        )
+
+
+def _planner_dialogue_text(dialogue_act: PlannerDialogueAct) -> str:
+    """Resolve planner dialogue text, preferring planner-provided wording."""
+    act = str(dialogue_act.act or '').strip()
+    text_hint = str(dialogue_act.text_hint or '').strip()
+    if text_hint:
+        return text_hint
+
+    fallback_by_act = {
+        'progress_update': 'I am working on it now.',
+        'ask_clarification': 'I need a bit more detail before I continue.',
+        'ask_for_help': 'I need help to continue this task.',
+        'explain_failure': 'I could not complete that task.',
+        'notify_completion': 'I finished that task.',
+        'notify_cancellation': 'Okay, I will stop working on that.',
+    }
+    if act in {'explain_failure', 'ask_for_help'}:
+        return fallback_by_act.get(act, '').strip()
+    if dialogue_act.reason:
+        return str(dialogue_act.reason).strip()
+    return fallback_by_act.get(act, '').strip()
+
+
+def _planner_tts_priority(priority_name: str) -> int:
+    """Map planner dialogue priority labels onto the local TTS priority scale."""
+    return {
+        'low': 96,
+        'normal': 128,
+        'high': 192,
+        'critical': 255,
+    }.get(str(priority_name or '').strip().lower(), 128)

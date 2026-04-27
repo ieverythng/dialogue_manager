@@ -39,12 +39,15 @@ graph LR
 ## Migration Notes
 
 - backend prefix should point to `chatbot_llm` in the current migration launch
+- the migrated `nao_chatbot` launch overrides `enable_default_chat:=true` so
+  spontaneous speech enters the chatbot loop without first opening `/skill/chat`
+- TTS remains on the upstream `tts_engine/tts` contract and is now served by
+  `nao_say_skill`, which also mirrors robot output to `/debug/nao_say/speech`
 - this package is now the active upstream-aligned runtime in `src/`
-- the old local bridge implementation was archived under
-  `.migration_backups/dialogue_manager_legacy_bridge_20260313/`
-- a temporary executable alias `dialogue_manager_node` is still installed so
-  older launch files do not fail immediately while the launch migration is in
-  progress
+- local modifications are limited to packaging, launch metadata,
+  documentation, the planner dialogue-act subscription in
+  `dialogue_manager/manager_node.py`, and the safe-shutdown wrapper in
+  `dialogue_manager/start_manager.py`
 
 ## ROS API
 
@@ -64,6 +67,7 @@ All topics/services exist only in `active` state. Actions exist in both `configu
 | `markup_action_timeout` | float | `10.0` | Default markup action timeout (s) |
 | `markup_libraries` | string[] | `["config/00-default_markup_libraries.json"]` | Markup definition files |
 | `disabled_markup_actions` | string[] | `["motion"]` | Markup actions to skip |
+| `planner_dialogue_act_topic` | string | `"/planner/dialogue_act"` | Planner-owned asynchronous dialogue-act topic |
 
 ### Topics
 
@@ -73,6 +77,7 @@ All topics/services exist only in `active` state. Actions exist in both `configu
 |-------|------|-------------|
 | `/humans/voices/tracked` | `hri_msgs/IdsList` | Tracked voice IDs |
 | `/humans/voices/<id>/speech` | `hri_msgs/LiveSpeech` | User speech input |
+| `/planner/dialogue_act` | `std_msgs/String` | Planner-owned asynchronous speech acts realized through the existing TTS seam |
 
 #### Published
 
@@ -114,8 +119,27 @@ All topics/services exist only in `active` state. Actions exist in both `configu
 ros2 launch dialogue_manager dialogue_manager.launch.py
 ```
 
-Or, in the migration stack:
+Or, in the simulator stack:
 
 ```bash
-ros2 launch nao_chatbot nao_chatbot_ros4hri_migration.launch.py
+ros2 launch nao_chatbot nao_chatbot_sim.launch.py
 ```
+
+With ASR included:
+
+```bash
+ros2 launch nao_chatbot nao_chatbot_sim_asr.launch.py
+```
+
+For the real robot path:
+
+```bash
+ros2 launch nao_chatbot nao_chatbot_robot.launch.py nao_ip:=...
+```
+
+## Debugging Note
+
+`~/closed_captions` intentionally carries both user speech and system speech.
+That shared caption stream is part of the upstream dialogue flow. Debug and UI
+tools should distinguish captions using `speaker_id` rather than assuming every
+caption is robot output.

@@ -65,6 +65,13 @@ class ChatbotClient:
         self._interaction_client = None
         self._waiting_for_response = False
         self._default_dialogue_id: Optional[UUID] = None
+        self._default_dialogue_retry_timer = None
+        self._default_dialogue_deadline_ns: Optional[int] = None
+        self._default_dialogue_role_name = '__default__'
+        self._default_dialogue_role_config = '{}'
+        self._default_dialogue_goal_future = None
+        self._default_dialogue_goal_sent_ns: Optional[int] = None
+        self._default_dialogue_wait_logged = False
 
     @property
     def waiting_for_response(self) -> bool:
@@ -98,6 +105,7 @@ class ChatbotClient:
 
     def destroy(self) -> None:
         """Destroy chatbot clients."""
+        self._cancel_default_dialogue_retry()
         if self._dialogue_client:
             self._dialogue_client.destroy()
             self._dialogue_client = None
@@ -118,23 +126,90 @@ class ChatbotClient:
             f'[DEFAULT CHAT] Starting with role="{role_name}", configuration={log_config}'
         )
 
+        self._default_dialogue_role_name = role_name
+        self._default_dialogue_role_config = role_config if role_config else '{}'
+        startup_timeout = self._node.get_parameter(
+            'chatbot_startup_timeout'
+        ).get_parameter_value().double_value
+        now_ns = self._node.get_clock().now().nanoseconds
+        self._default_dialogue_deadline_ns = now_ns + int(startup_timeout * 1e9)
+        self._cancel_default_dialogue_retry()
+        self._default_dialogue_goal_future = None
+        self._default_dialogue_goal_sent_ns = None
+        self._default_dialogue_wait_logged = False
+        self._attempt_start_default_chat()
+
+    def _attempt_start_default_chat(self) -> None:
+        """Attempt to start the default dialogue, retrying until the chatbot is ready."""
+        if self._default_dialogue_id is not None:
+            self._cancel_default_dialogue_retry()
+            return
+
+        now_ns = self._node.get_clock().now().nanoseconds
+        if (
+            self._default_dialogue_deadline_ns is not None
+            and now_ns >= self._default_dialogue_deadline_ns
+        ):
+            self._node.get_logger().warn('[DEFAULT CHAT] Chatbot not available')
+            self._cancel_default_dialogue_retry()
+            return
+
+        if self._default_dialogue_retry_timer is None:
+            self._default_dialogue_retry_timer = self._node.create_timer(
+                0.5,
+                self._attempt_start_default_chat,
+            )
+
+        if self._default_dialogue_goal_future is not None:
+            if self._default_dialogue_goal_future.done():
+                return
+
+            if self._default_dialogue_goal_sent_ns is not None:
+                elapsed_sec = (now_ns - self._default_dialogue_goal_sent_ns) / 1e9
+                if elapsed_sec < 2.0:
+                    return
+
+            self._node.get_logger().warn(
+                '[DEFAULT CHAT] Start request timed out waiting for goal response; retrying'
+            )
+            self._default_dialogue_goal_future = None
+            self._default_dialogue_goal_sent_ns = None
+
         role = DialogueRole()
-        role.name = role_name
-        role.configuration = role_config if role_config else '{}'
+        role.name = self._default_dialogue_role_name
+        role.configuration = self._default_dialogue_role_config
 
         if self._dialogue_client and self._dialogue_client.wait_for_server(timeout_sec=1.0):
             self._node.get_logger().debug('[DEFAULT CHAT] Server available, sending goal')
             goal = DialogueAction.Goal()
             goal.role = role
             future = self._dialogue_client.send_goal_async(goal)
+            self._default_dialogue_goal_future = future
+            self._default_dialogue_goal_sent_ns = now_ns
             future.add_done_callback(self._on_default_dialogue_started)
         else:
-            self._node.get_logger().warn('[DEFAULT CHAT] Chatbot not available')
+            if not self._default_dialogue_wait_logged:
+                self._node.get_logger().info(
+                    '[DEFAULT CHAT] Chatbot not ready yet; waiting for backend startup'
+                )
+                self._default_dialogue_wait_logged = True
 
     def _on_default_dialogue_started(self, future) -> None:
         """Handle default dialogue start result."""
-        goal_handle = future.result()
+        if self._default_dialogue_goal_future is future:
+            self._default_dialogue_goal_future = None
+            self._default_dialogue_goal_sent_ns = None
+
+        try:
+            goal_handle = future.result()
+        except Exception as err:
+            self._node.get_logger().warn(
+                f'[DEFAULT CHAT] Failed to receive goal response: {err}'
+            )
+            return
+
         if goal_handle and goal_handle.accepted:
+            self._cancel_default_dialogue_retry()
             # Extract the chatbot's goal UUID from the goal handle
             chatbot_goal_id = UUID(bytes=bytes(goal_handle.goal_id.uuid))
             dialogue = Dialogue(
@@ -151,6 +226,15 @@ class ChatbotClient:
             )
         else:
             self._node.get_logger().warn('[DEFAULT CHAT] Failed - chatbot rejected goal')
+
+    def _cancel_default_dialogue_retry(self) -> None:
+        """Stop retrying the default dialogue startup."""
+        if self._default_dialogue_retry_timer is not None:
+            self._node.destroy_timer(self._default_dialogue_retry_timer)
+            self._default_dialogue_retry_timer = None
+        self._default_dialogue_goal_future = None
+        self._default_dialogue_goal_sent_ns = None
+        self._default_dialogue_wait_logged = False
 
     def send_input(
         self,

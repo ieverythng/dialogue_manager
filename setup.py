@@ -32,9 +32,6 @@ setup(
     entry_points={
         'console_scripts': [
             'start_manager = ' + NAME + '.start_manager:main',
-            # Temporary compatibility alias while stack launches migrate off the
-            # legacy executable name.
-            'dialogue_manager_node = ' + NAME + '.start_manager:main',
         ],
     },
 )
