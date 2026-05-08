@@ -15,7 +15,6 @@
 """Speech input handler for the Dialogue Manager."""
 
 import json
-from typing import Dict, Optional, Set
 
 from hri_actions_msgs.msg import ClosedCaption, Intent
 from hri_msgs.msg import IdsList, LiveSpeech
@@ -50,9 +49,9 @@ class SpeechHandler:
         self._closed_captions_pub = closed_captions_pub
         self._intents_pub = intents_pub
 
-        self._tracked_voices: Set[str] = set()
-        self._voice_subscriptions: Dict[str, Subscription] = {}
-        self._voices_sub: Optional[Subscription] = None
+        self._tracked_voices: set[str] = set()
+        self._voice_subscriptions: dict[str, Subscription] = {}
+        self._voices_sub: Subscription | None = None
         self._chatbot_enabled = True
 
     def set_chatbot_enabled(self, enabled: bool) -> None:

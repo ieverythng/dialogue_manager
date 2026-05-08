@@ -14,7 +14,7 @@
 
 """Chatbot client for the Dialogue Manager."""
 
-from typing import Callable, Optional
+from collections.abc import Callable
 from uuid import UUID
 
 from chatbot_msgs.action import Dialogue as DialogueAction
@@ -61,10 +61,10 @@ class ChatbotClient:
         node: Node,
         dialogue_manager: DialogueManager,
         tts_client: TTSClient,
-        expression_executor: Optional[ExpressionExecutor] = None,
-        intents_pub: Optional[Publisher] = None,
-        waiting_chatbot_pub: Optional[Publisher] = None,
-        callback_group: Optional[ReentrantCallbackGroup] = None
+        expression_executor: ExpressionExecutor | None = None,
+        intents_pub: Publisher | None = None,
+        waiting_chatbot_pub: Publisher | None = None,
+        callback_group: ReentrantCallbackGroup | None = None
     ):
         """Initialize the chatbot client."""
         self._node = node
@@ -75,10 +75,10 @@ class ChatbotClient:
         self._waiting_chatbot_pub = waiting_chatbot_pub
         self._callback_group = callback_group
 
-        self._dialogue_client: Optional[ActionClient] = None
+        self._dialogue_client: ActionClient | None = None
         self._interaction_client = None
         self._waiting_for_response = False
-        self._default_dialogue_id: Optional[UUID] = None
+        self._default_dialogue_id: UUID | None = None
 
     def _now(self) -> float:
         """Return the current time in epoch seconds, from the node clock."""
@@ -90,7 +90,7 @@ class ChatbotClient:
         return self._waiting_for_response
 
     @property
-    def default_dialogue_id(self) -> Optional[UUID]:
+    def default_dialogue_id(self) -> UUID | None:
         """Return the default dialogue ID if active."""
         return self._default_dialogue_id
 
@@ -178,7 +178,7 @@ class ChatbotClient:
         dialogue_id: UUID,
         user_id: str,
         text: str,
-        response_callback: Optional[Callable] = None
+        response_callback: Callable | None = None
     ) -> bool:
         """Send user input to chatbot."""
         if not self._interaction_client:
@@ -234,7 +234,7 @@ class ChatbotClient:
         self,
         future,
         dialogue_id: UUID,
-        callback: Optional[Callable] = None
+        callback: Callable | None = None
     ) -> None:
         """Handle chatbot response."""
         self._waiting_for_response = False
@@ -338,7 +338,7 @@ class ChatbotClient:
         self,
         role: DialogueRole,
         timeout_sec: float = 5.0
-    ) -> Optional[object]:
+    ) -> object | None:
         """Start a new dialogue session."""
         if not self._dialogue_client:
             self._node.get_logger().warn('[CHATBOT] No dialogue client available')

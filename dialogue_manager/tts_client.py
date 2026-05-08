@@ -14,8 +14,8 @@
 
 """TTS client for the Dialogue Manager."""
 
+from collections.abc import Callable
 import threading
-from typing import Callable, Optional
 
 from hri_actions_msgs.msg import ClosedCaption
 from rclpy.action import ActionClient
@@ -42,7 +42,7 @@ class TTSClient:
         dialogue_manager: DialogueManager,
         closed_captions_pub: Publisher,
         robot_speech_pub: Publisher,
-        callback_group: Optional[ReentrantCallbackGroup] = None
+        callback_group: ReentrantCallbackGroup | None = None
     ):
         """Initialize the TTS client."""
         self._node = node
@@ -51,8 +51,8 @@ class TTSClient:
         self._robot_speech_pub = robot_speech_pub
         self._callback_group = callback_group
 
-        self._tts_client: Optional[ActionClient] = None
-        self._on_complete_callback: Optional[Callable[[], None]] = None
+        self._tts_client: ActionClient | None = None
+        self._on_complete_callback: Callable[[], None] | None = None
 
     def create_client(self, action_name: str = 'tts_engine/tts') -> None:
         """Create the TTS action client."""
@@ -80,7 +80,7 @@ class TTSClient:
         self,
         text: str,
         priority: int = 128,
-        on_complete: Optional[Callable[[], None]] = None
+        on_complete: Callable[[], None] | None = None
     ) -> bool:
         """Send text to TTS engine."""
         if not self._tts_client:
