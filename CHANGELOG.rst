@@ -2,8 +2,8 @@
 Changelog for package dialogue_manager
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
+1.0.0 (2026-05-08)
+------------------
 * typing: replace typing.Optional with PEP 604 X | None
   Drop the typing.Optional / typing.Dict / typing.Set imports across
   chatbot_client, tts_client and speech_handler; use the PEP 604 union

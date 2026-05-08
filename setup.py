@@ -9,7 +9,7 @@ NAME = 'dialogue_manager'
 
 setup(
     name=NAME,
-    version='0.4.0',
+    version='1.0.0',
     license='Apache-2.0',
     description='ROS4HRI-compatible dialogue manager',
     author='todo',

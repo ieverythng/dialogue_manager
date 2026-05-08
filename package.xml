@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package format="3">
     <name>dialogue_manager</name>
-    <version>0.4.0</version>
+    <version>1.0.0</version>
     <description>ROS4HRI-compatible dialogue manager</description>
 
   <maintainer email="severin.lemaignan@iiia.csic.es">Séverin Lemaignan</maintainer>
