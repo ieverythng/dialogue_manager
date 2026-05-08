@@ -17,6 +17,7 @@
 import json
 import threading
 import time
+from collections.abc import Callable
 from typing import Optional
 
 from chatbot_msgs.msg import DialogueRole
@@ -28,9 +29,21 @@ from rclpy.node import Node
 from rclpy.publisher import Publisher
 
 from .chatbot_client import ChatbotClient
-from .dialogue import Dialogue, DialogueManager, DialogueState
+from .conversations_history import ConversationsHistoryStore
+from .dialogue import (
+    Dialogue,
+    DialogueManager,
+    DialogueState,
+    Interlocutor,
+    ROBOT_SPEAKER_ID,
+    SAY_ROLE_NAME,
+)
 from .markup.executor import ExpressionExecutor
 from .tts_client import TTSClient
+
+
+GroupResolver = Callable[[str], list[str]]
+"""Callable mapping a group ID to its member person IDs (may return [])."""
 
 
 class SkillServers:
@@ -46,22 +59,65 @@ class SkillServers:
         dialogue_manager: DialogueManager,
         chatbot_client: ChatbotClient,
         tts_client: TTSClient,
-        expression_executor: Optional[ExpressionExecutor] = None,
-        closed_captions_pub: Optional[Publisher] = None,
-        callback_group: Optional[ReentrantCallbackGroup] = None
+        conversations_store: ConversationsHistoryStore,
+        group_resolver: GroupResolver,
+        expression_executor: ExpressionExecutor | None = None,
+        closed_captions_pub: Publisher | None = None,
+        callback_group: ReentrantCallbackGroup | None = None,
+        context_summarizer: Optional[Callable[[Dialogue], str]] = None,
     ):
         """Initialize skill servers."""
         self._node = node
         self._dialogue_manager = dialogue_manager
         self._chatbot_client = chatbot_client
         self._tts_client = tts_client
+        self._conversations_store = conversations_store
+        self._group_resolver = group_resolver
         self._expression_executor = expression_executor
         self._closed_captions_pub = closed_captions_pub
         self._callback_group = callback_group
+        self._context_summarizer = context_summarizer
 
-        self._chat_server: Optional[ActionServer] = None
-        self._ask_server: Optional[ActionServer] = None
-        self._say_server: Optional[ActionServer] = None
+    def _now(self) -> float:
+        """Return the current time in epoch seconds, from the node clock."""
+        return self._node.get_clock().now().nanoseconds / 1e9
+
+    def _resolve_group_members(self, group_id: str) -> list[str]:
+        try:
+            return list(self._group_resolver(group_id) or [])
+        except Exception as exc:
+            self._node.get_logger().warn(
+                f'[SKILLS] group resolver failed for "{group_id}": {exc}'
+            )
+            return []
+
+    def _finalize_and_archive(self, dialogue: Dialogue) -> None:
+        """Mark a dialogue completed, archive it, and remove it from tracking."""
+        dialogue.state = DialogueState.COMPLETED
+        dialogue.ended_at = self._now()
+        members = (
+            self._resolve_group_members(dialogue.interlocutor.group_id)
+            if dialogue.interlocutor.is_group
+            else None
+        )
+        self._conversations_store.archive(dialogue, group_members=members)
+        self._dialogue_manager.remove_dialogue(dialogue.dialogue_id)
+
+    def _inject_initial_context(self, dialogue: Dialogue) -> None:
+        """Build and push the conversation context to the chatbot at start."""
+        if not dialogue.interlocutor.is_bound:
+            return
+        context = self._conversations_store.build_context(
+            dialogue.interlocutor,
+            now=self._now(),
+            summarize=self._context_summarizer,
+        )
+        if context:
+            self._chatbot_client.inject_context(dialogue.dialogue_id, context)
+
+        self._chat_server: ActionServer | None = None
+        self._ask_server: ActionServer | None = None
+        self._say_server: ActionServer | None = None
         self._is_active = False
 
     def set_active(self, active: bool) -> None:
@@ -188,8 +244,10 @@ class SkillServers:
         # Create dialogue
         dialogue = Dialogue(
             role=request.role,
-            person_id=request.person_id,
-            group_id=request.group_id,
+            interlocutor=Interlocutor(
+                person_id=request.person_id,
+                group_id=request.group_id,
+            ),
             priority=request.meta.priority,
             state=DialogueState.PENDING,
             goal_handle=goal_handle
@@ -217,6 +275,9 @@ class SkillServers:
         dialogue.state = DialogueState.ACTIVE
         self._node.get_logger().info(f'[CHAT] Dialogue {dialogue.dialogue_id} now ACTIVE')
 
+        # Prime the chatbot with the conversation context for this interlocutor.
+        self._inject_initial_context(dialogue)
+
         # If initiate=true, generate initial utterance
         if request.initiate:
             if request.initial_input:
@@ -241,8 +302,8 @@ class SkillServers:
         # Cancel chatbot dialogue
         chatbot_handle.cancel_goal_async()
 
-        # Clean up
-        self._dialogue_manager.remove_dialogue(dialogue.dialogue_id)
+        # Mark completed, archive, and clean up tracking.
+        self._finalize_and_archive(dialogue)
 
         if goal_handle.is_cancel_requested:
             self._node.get_logger().info('[CHAT] Cancelled by caller')
@@ -284,8 +345,10 @@ class SkillServers:
         # Create dialogue
         dialogue = Dialogue(
             role=role,
-            person_id=request.person_id,
-            group_id=request.group_id,
+            interlocutor=Interlocutor(
+                person_id=request.person_id,
+                group_id=request.group_id,
+            ),
             priority=request.meta.priority,
             state=DialogueState.PENDING,
             goal_handle=goal_handle
@@ -311,9 +374,16 @@ class SkillServers:
 
         dialogue.state = DialogueState.ACTIVE
 
+        # ASK dialogues are excluded from context by default, so we do not
+        # prime the chatbot with prior conversations here.
+
         # Speak the question
         self._node.get_logger().info('[ASK] Speaking question via TTS')
         self._tts_client.speak(request.question, request.meta.priority)
+        # Record the question as a robot utterance against the dialogue.
+        dialogue.add_utterance(
+            ROBOT_SPEAKER_ID, request.question, self._now()
+        )
 
         # Wait for dialogue completion
         while not goal_handle.is_cancel_requested:
@@ -330,8 +400,8 @@ class SkillServers:
         except Exception as e:
             self._node.get_logger().warn(f'[ASK] Failed to get results: {e}')
 
-        # Clean up
-        self._dialogue_manager.remove_dialogue(dialogue.dialogue_id)
+        # Mark completed, archive, and clean up tracking.
+        self._finalize_and_archive(dialogue)
 
         if goal_handle.is_cancel_requested:
             chatbot_handle.cancel_goal_async()
@@ -420,6 +490,48 @@ class SkillServers:
             goal_handle.abort()
             return result
 
+        # If addressed at a specific person/group, record the spoken text in
+        # the corresponding dialogue history (or as a one-shot synthetic
+        # __say__ dialogue when no chat is active for that interlocutor).
+        if request.person_id or request.group_id:
+            self._record_say_utterance(
+                Interlocutor(
+                    person_id=request.person_id,
+                    group_id=request.group_id,
+                ),
+                request.input,
+            )
+
         self._node.get_logger().info('[SAY] Completed successfully')
         goal_handle.succeed()
         return result
+
+    def _record_say_utterance(
+        self, interlocutor: Interlocutor, raw_input: str
+    ) -> None:
+        """Record a Say utterance against an interlocutor's history."""
+        plain_text = (
+            self._expression_executor.get_plain_text(raw_input)
+            if self._expression_executor else raw_input
+        )
+        if not plain_text:
+            return
+
+        timestamp = self._now()
+        active = self._dialogue_manager.get_dialogue_for_interlocutor(interlocutor)
+        if active is not None:
+            active.add_utterance(ROBOT_SPEAKER_ID, plain_text, timestamp)
+            return
+
+        synthetic = Dialogue(
+            role=DialogueRole(name=SAY_ROLE_NAME),
+            interlocutor=interlocutor,
+            state=DialogueState.COMPLETED,
+        )
+        synthetic.add_utterance(ROBOT_SPEAKER_ID, plain_text, timestamp)
+        synthetic.ended_at = timestamp
+        members = (
+            self._resolve_group_members(interlocutor.group_id)
+            if interlocutor.is_group else None
+        )
+        self._conversations_store.archive(synthetic, group_members=members)

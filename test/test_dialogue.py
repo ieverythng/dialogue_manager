@@ -21,6 +21,9 @@ from dialogue_manager.dialogue import (
     Dialogue,
     DialogueManager,
     DialogueState,
+    Interlocutor,
+    ROBOT_SPEAKER_ID,
+    Utterance,
 )
 import pytest
 
@@ -40,6 +43,60 @@ class TestDialogueState:
         assert len(DialogueState) == 4
 
 
+class TestInterlocutor:
+    """Tests for the Interlocutor union type."""
+
+    def test_empty_interlocutor_unbound(self):
+        """An empty Interlocutor is anonymous and unbound."""
+        i = Interlocutor()
+        assert not i.is_bound
+        assert not i.is_group
+        assert i.key == 'anonymous'
+
+    def test_person_interlocutor(self):
+        """A person interlocutor is bound and not a group."""
+        i = Interlocutor(person_id='alice')
+        assert i.is_bound
+        assert not i.is_group
+        assert i.key == 'person:alice'
+
+    def test_group_interlocutor(self):
+        """A group interlocutor is bound and reports as group."""
+        i = Interlocutor(group_id='visitors')
+        assert i.is_bound
+        assert i.is_group
+        assert i.key == 'group:visitors'
+
+    def test_both_set_raises(self):
+        """Setting both person_id and group_id is rejected."""
+        with pytest.raises(ValueError, match='cannot have both'):
+            Interlocutor(person_id='alice', group_id='visitors')
+
+    def test_equality(self):
+        """Interlocutors with the same fields compare equal and hash equal."""
+        a = Interlocutor(person_id='alice')
+        b = Interlocutor(person_id='alice')
+        assert a == b
+        assert hash(a) == hash(b)
+
+
+class TestUtterance:
+    """Tests for the Utterance dataclass."""
+
+    def test_create_utterance(self):
+        """Utterances carry timestamp, speaker, text."""
+        u = Utterance(timestamp=1.5, speaker_id='alice', text='hi')
+        assert u.timestamp == 1.5
+        assert u.speaker_id == 'alice'
+        assert u.text == 'hi'
+
+    def test_utterance_frozen(self):
+        """Utterances are immutable."""
+        u = Utterance(timestamp=1.0, speaker_id='alice', text='hi')
+        with pytest.raises(Exception):
+            u.text = 'bye'  # type: ignore[misc]
+
+
 class TestDialogue:
     """Tests for the Dialogue dataclass."""
 
@@ -49,11 +106,14 @@ class TestDialogue:
         dialogue = Dialogue(role=role)
 
         assert dialogue.role == role
-        assert dialogue.person_id == ''
-        assert dialogue.group_id == ''
+        assert dialogue.interlocutor == Interlocutor()
         assert dialogue.priority == 128
         assert dialogue.state == DialogueState.PENDING
         assert isinstance(dialogue.dialogue_id, UUID)
+        assert dialogue.started_at is None
+        assert dialogue.ended_at is None
+        assert dialogue.history == []
+        assert dialogue.summary is None
         assert dialogue.chatbot_goal_id is None
         assert dialogue.goal_handle is None
 
@@ -62,11 +122,11 @@ class TestDialogue:
         role = DialogueRole(name='full_role')
         dialogue_id = uuid4()
         chatbot_id = uuid4()
+        interlocutor = Interlocutor(person_id='person_123')
 
         dialogue = Dialogue(
             role=role,
-            person_id='person_123',
-            group_id='group_456',
+            interlocutor=interlocutor,
             priority=200,
             state=DialogueState.ACTIVE,
             dialogue_id=dialogue_id,
@@ -75,8 +135,7 @@ class TestDialogue:
         )
 
         assert dialogue.role == role
-        assert dialogue.person_id == 'person_123'
-        assert dialogue.group_id == 'group_456'
+        assert dialogue.interlocutor == interlocutor
         assert dialogue.priority == 200
         assert dialogue.state == DialogueState.ACTIVE
         assert dialogue.dialogue_id == dialogue_id
@@ -113,6 +172,33 @@ class TestDialogue:
         d1 = Dialogue(role=role)
         d2 = Dialogue(role=role)
         assert d1.dialogue_id != d2.dialogue_id
+
+    def test_add_utterance_appends(self):
+        """Utterances accumulate in history order."""
+        d = Dialogue(role=DialogueRole(name='test'))
+        d.add_utterance('alice', 'hello', timestamp=1.0)
+        d.add_utterance(ROBOT_SPEAKER_ID, 'hi alice', timestamp=2.0)
+        assert len(d.history) == 2
+        assert d.history[0].speaker_id == 'alice'
+        assert d.history[1].speaker_id == ROBOT_SPEAKER_ID
+
+    def test_add_utterance_lazy_started_at(self):
+        """`started_at` is set on the first utterance only."""
+        d = Dialogue(role=DialogueRole(name='test'))
+        assert d.started_at is None
+        d.add_utterance('alice', 'one', timestamp=10.0)
+        assert d.started_at == 10.0
+        d.add_utterance('alice', 'two', timestamp=20.0)
+        assert d.started_at == 10.0  # unchanged
+
+    def test_add_utterance_invalidates_summary(self):
+        """A new utterance discards the cached summary."""
+        d = Dialogue(role=DialogueRole(name='test'))
+        d.summary = 'previously summarized'
+        d.summary_generated_at = 1.0
+        d.add_utterance('alice', 'new turn', timestamp=42.0)
+        assert d.summary is None
+        assert d.summary_generated_at is None
 
 
 class TestDialogueManager:
@@ -273,53 +359,70 @@ class TestDialogueManager:
 
         assert manager.can_accept_priority(50) is False
 
-    def test_get_dialogue_for_person_found(self):
-        """Find active dialogue for a person."""
+    def test_get_dialogue_for_interlocutor_found(self):
+        """Find active dialogue for an interlocutor."""
         manager = DialogueManager()
         role = DialogueRole(name='test')
+        interlocutor = Interlocutor(person_id='person_123')
         dialogue = Dialogue(
-            role=role, person_id='person_123', state=DialogueState.ACTIVE
+            role=role, interlocutor=interlocutor, state=DialogueState.ACTIVE
         )
         manager.add_dialogue(dialogue)
 
-        result = manager.get_dialogue_for_person('person_123')
+        result = manager.get_dialogue_for_interlocutor(interlocutor)
 
         assert result is dialogue
 
-    def test_get_dialogue_for_person_not_found(self):
-        """Return None when no dialogue exists for person."""
+    def test_get_dialogue_for_interlocutor_not_found(self):
+        """Return None when no dialogue exists for interlocutor."""
         manager = DialogueManager()
-        result = manager.get_dialogue_for_person('unknown_person')
+        result = manager.get_dialogue_for_interlocutor(
+            Interlocutor(person_id='unknown')
+        )
         assert result is None
 
-    def test_get_dialogue_for_person_inactive(self):
+    def test_get_dialogue_for_interlocutor_inactive(self):
         """Return None when dialogue exists but is not ACTIVE."""
         manager = DialogueManager()
         role = DialogueRole(name='test')
+        interlocutor = Interlocutor(person_id='person_123')
         dialogue = Dialogue(
-            role=role, person_id='person_123', state=DialogueState.PENDING
+            role=role, interlocutor=interlocutor, state=DialogueState.PENDING
         )
         manager.add_dialogue(dialogue)
 
-        result = manager.get_dialogue_for_person('person_123')
+        result = manager.get_dialogue_for_interlocutor(interlocutor)
 
         assert result is None
 
-    def test_get_dialogue_for_person_multiple(self):
-        """Return the active dialogue when multiple exist for person."""
+    def test_get_dialogue_for_interlocutor_multiple(self):
+        """Return the active dialogue when multiple exist for interlocutor."""
         manager = DialogueManager()
         role = DialogueRole(name='test')
+        interlocutor = Interlocutor(person_id='person_123')
 
         d1 = Dialogue(
-            role=role, person_id='person_123', state=DialogueState.COMPLETED
+            role=role, interlocutor=interlocutor, state=DialogueState.COMPLETED
         )
         d2 = Dialogue(
-            role=role, person_id='person_123', state=DialogueState.ACTIVE
+            role=role, interlocutor=interlocutor, state=DialogueState.ACTIVE
         )
 
         manager.add_dialogue(d1)
         manager.add_dialogue(d2)
 
-        result = manager.get_dialogue_for_person('person_123')
+        result = manager.get_dialogue_for_interlocutor(interlocutor)
 
         assert result is d2
+
+    def test_get_dialogue_for_group_interlocutor(self):
+        """Group interlocutors are looked up the same way."""
+        manager = DialogueManager()
+        role = DialogueRole(name='test')
+        interlocutor = Interlocutor(group_id='group_42')
+        dialogue = Dialogue(
+            role=role, interlocutor=interlocutor, state=DialogueState.ACTIVE
+        )
+        manager.add_dialogue(dialogue)
+
+        assert manager.get_dialogue_for_interlocutor(interlocutor) is dialogue

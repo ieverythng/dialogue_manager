@@ -27,9 +27,20 @@ from rclpy.publisher import Publisher
 from std_msgs.msg import Bool
 from unique_identifier_msgs.msg import UUID as UUIDMsg
 
-from .dialogue import Dialogue, DialogueManager, DialogueState
+from .dialogue import (
+    Dialogue,
+    DialogueManager,
+    DialogueState,
+    Interlocutor,
+    ROBOT_SPEAKER_ID,
+)
 from .markup.executor import ExpressionExecutor
 from .tts_client import TTSClient
+
+
+# Per chatbot_msgs/srv/DialogueInteraction.srv
+SYSTEM_USER_ID = '__system__'
+ASSISTANT_USER_ID = '__assistant__'
 
 
 def uuid_to_msg(uuid: UUID) -> UUIDMsg:
@@ -68,6 +79,10 @@ class ChatbotClient:
         self._interaction_client = None
         self._waiting_for_response = False
         self._default_dialogue_id: Optional[UUID] = None
+
+    def _now(self) -> float:
+        """Return the current time in epoch seconds, from the node clock."""
+        return self._node.get_clock().now().nanoseconds / 1e9
 
     @property
     def waiting_for_response(self) -> bool:
@@ -140,8 +155,11 @@ class ChatbotClient:
         if goal_handle and goal_handle.accepted:
             # Extract the chatbot's goal UUID from the goal handle
             chatbot_goal_id = UUID(bytes=bytes(goal_handle.goal_id.uuid))
+            # Default chat starts unbound; the interlocutor is filled in when
+            # someone first speaks to the robot.
             dialogue = Dialogue(
-                role=DialogueRole(name='__default__'),
+                role=DialogueRole(name=DialogueRole.DEFAULT_ROLE),
+                interlocutor=Interlocutor(),
                 priority=0,  # Default chat has lowest priority
                 state=DialogueState.ACTIVE,
                 chatbot_goal_id=chatbot_goal_id
@@ -182,6 +200,15 @@ class ChatbotClient:
             f'[CHATBOT REQUEST] chatbot_goal_id={dialogue.chatbot_goal_id}, '
             f'user_id="{user_id}", text="{text}"'
         )
+
+        # Record the user-attributable utterance in the dialogue history.
+        # __system__ messages are not utterances. Empty inputs are generation
+        # triggers (used by Chat with initiate=True), not real content.
+        if text and user_id != SYSTEM_USER_ID:
+            speaker = (
+                ROBOT_SPEAKER_ID if user_id == ASSISTANT_USER_ID else user_id
+            )
+            dialogue.add_utterance(speaker, text, self._now())
 
         # Set waiting state
         self._waiting_for_response = True
@@ -237,6 +264,12 @@ class ChatbotClient:
             f'[CHATBOT RESPONSE] dialogue_id={dialogue_id}: {log_text}'
         )
 
+        # Record the robot's utterance in the dialogue history.
+        if dialogue and response.response:
+            dialogue.add_utterance(
+                ROBOT_SPEAKER_ID, response.response, self._now()
+            )
+
         # Publish intents
         if response.intents:
             self._node.get_logger().info(
@@ -268,6 +301,38 @@ class ChatbotClient:
                 callback(response)
             except Exception as e:
                 self._node.get_logger().error(f'[CHATBOT] Response callback failed: {e}')
+
+    def inject_context(self, dialogue_id: UUID, context: str) -> bool:
+        """
+        Push a `__system__` priming message into the chatbot for this dialogue.
+
+        Used at dialogue start to deliver the per-interlocutor conversation
+        context. No response is expected and no history is recorded (system
+        messages are not utterances per DIALOGUE_FLOW.md).
+
+        See TODO.md — context delivery for the longer-term redesign.
+        """
+        if not context:
+            return False
+        if not self._interaction_client:
+            return False
+
+        dialogue = self._dialogue_manager.get_dialogue(dialogue_id)
+        if not dialogue or not dialogue.chatbot_goal_id:
+            return False
+
+        request = DialogueInteraction.Request()
+        request.dialogue_id = uuid_to_msg(dialogue.chatbot_goal_id)
+        request.user_id = SYSTEM_USER_ID
+        request.input = context
+        request.response_expected = False
+
+        self._node.get_logger().info(
+            f'[CHATBOT] Injecting context for dialogue {dialogue_id} '
+            f'({len(context)} chars)'
+        )
+        self._interaction_client.call_async(request)
+        return True
 
     async def start_dialogue(
         self,

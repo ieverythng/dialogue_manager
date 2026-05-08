@@ -15,6 +15,7 @@
 """Main Dialogue Manager ROS2 node."""
 
 import os
+from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
@@ -25,6 +26,7 @@ from rclpy.lifecycle import LifecycleNode, State, TransitionCallbackReturn
 from std_msgs.msg import Bool, String
 
 from .chatbot_client import ChatbotClient
+from .conversations_history import ConversationsHistoryStore
 from .dialogue import DialogueManager
 from .markup import ActionLibrary, ExpressionExecutor
 from .skill_servers import SkillServers
@@ -50,6 +52,7 @@ class DialogueManagerNode(LifecycleNode):
 
         # Core dialogue tracking
         self._dialogue_manager = DialogueManager()
+        self._conversations_store: ConversationsHistoryStore | None = None
 
         # Handlers (created in on_configure)
         self._tts_client: TTSClient | None = None
@@ -114,6 +117,14 @@ class DialogueManagerNode(LifecycleNode):
             'disabled_markup_actions', ['motion'],
             ParameterDescriptor(description='Markup actions to skip')
         )
+        self.declare_parameter(
+            'conversations_storage_dir',
+            '~/.ros/dialogue_manager/conversations',
+            ParameterDescriptor(
+                description='Directory where per-person/group conversation '
+                'histories are persisted. Empty = in-memory only.'
+            )
+        )
 
     # =========================================================================
     # Lifecycle callbacks
@@ -122,6 +133,26 @@ class DialogueManagerNode(LifecycleNode):
     def on_configure(self, state: State) -> TransitionCallbackReturn:
         """Configure the node: create publishers and handlers."""
         self.get_logger().info('Configuring Dialogue Manager...')
+
+        # Conversations history (load from disk if configured)
+        storage_dir_param = (
+            self.get_parameter('conversations_storage_dir')
+            .get_parameter_value().string_value
+        )
+        storage_dir = Path(storage_dir_param).expanduser() if storage_dir_param else None
+        self._conversations_store = ConversationsHistoryStore(
+            storage_dir=storage_dir,
+            logger=self.get_logger(),
+        )
+        try:
+            self._conversations_store.load()
+            self.get_logger().info(
+                f'[CONFIGURE] Conversations store ready (dir={storage_dir})'
+            )
+        except Exception as exc:
+            self.get_logger().warn(
+                f'[CONFIGURE] Failed to load conversations history: {exc}'
+            )
 
         # Create publishers
         self._closed_captions_pub = self.create_publisher(
@@ -219,9 +250,11 @@ class DialogueManagerNode(LifecycleNode):
             dialogue_manager=self._dialogue_manager,
             chatbot_client=self._chatbot_client,
             tts_client=self._tts_client,
+            conversations_store=self._conversations_store,
+            group_resolver=self._resolve_group_members,
             expression_executor=self._expression_executor,
             closed_captions_pub=self._closed_captions_pub,
-            callback_group=self._callback_group
+            callback_group=self._callback_group,
         )
         self._skill_servers.create_servers()
         self.get_logger().debug('[CONFIGURE] Skill servers created')
@@ -279,6 +312,17 @@ class DialogueManagerNode(LifecycleNode):
         if self._diag_timer:
             self.destroy_timer(self._diag_timer)
 
+        if self._conversations_store is not None:
+            try:
+                self._conversations_store.save()
+                self.get_logger().info(
+                    '[SHUTDOWN] Conversations history persisted'
+                )
+            except Exception as exc:
+                self.get_logger().warn(
+                    f'[SHUTDOWN] Failed to persist conversations history: {exc}'
+                )
+
         if self._skill_servers:
             self._skill_servers.destroy()
         if self._action_library:
@@ -290,6 +334,20 @@ class DialogueManagerNode(LifecycleNode):
 
         self.get_logger().info('Dialogue Manager shutdown complete.')
         return TransitionCallbackReturn.SUCCESS
+
+    # =========================================================================
+    # Helpers
+    # =========================================================================
+
+    def _resolve_group_members(self, group_id: str) -> list[str]:
+        """
+        Resolve a ROS4HRI group ID to its member person IDs.
+
+        TODO: pyhri does not yet expose person groups (see TODO.md). Returns
+        an empty list for now, which means group dialogues are archived only
+        under the group key and not fanned out to individual members.
+        """
+        return []
 
     # =========================================================================
     # Diagnostics

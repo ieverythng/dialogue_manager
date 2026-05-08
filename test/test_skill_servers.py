@@ -16,8 +16,13 @@
 
 from unittest.mock import MagicMock, patch
 
+from dialogue_manager.conversations_history import ConversationsHistoryStore
 from dialogue_manager.dialogue import DialogueManager
 from dialogue_manager.skill_servers import SkillServers
+
+
+def _empty_group_resolver(_group_id: str) -> list[str]:
+    return []
 
 
 class TestSkillServersInit:
@@ -36,6 +41,8 @@ class TestSkillServersInit:
             dialogue_manager=mock_dialogue_manager,
             chatbot_client=mock_chatbot_client,
             tts_client=mock_tts_client,
+            conversations_store=ConversationsHistoryStore(),
+            group_resolver=_empty_group_resolver,
             closed_captions_pub=mock_captions_pub
         )
 
@@ -52,6 +59,8 @@ class TestSkillServersInit:
             dialogue_manager=MagicMock(),
             chatbot_client=MagicMock(),
             tts_client=MagicMock(),
+            conversations_store=ConversationsHistoryStore(),
+            group_resolver=_empty_group_resolver,
             closed_captions_pub=MagicMock()
         )
 
@@ -68,6 +77,8 @@ class TestSkillServersSetActive:
             dialogue_manager=MagicMock(),
             chatbot_client=MagicMock(),
             tts_client=MagicMock(),
+            conversations_store=ConversationsHistoryStore(),
+            group_resolver=_empty_group_resolver,
             closed_captions_pub=MagicMock()
         )
 
@@ -82,6 +93,8 @@ class TestSkillServersSetActive:
             dialogue_manager=MagicMock(),
             chatbot_client=MagicMock(),
             tts_client=MagicMock(),
+            conversations_store=ConversationsHistoryStore(),
+            group_resolver=_empty_group_resolver,
             closed_captions_pub=MagicMock()
         )
         servers._is_active = True
@@ -102,6 +115,8 @@ class TestSkillServersCreateServers:
             dialogue_manager=MagicMock(),
             chatbot_client=MagicMock(),
             tts_client=MagicMock(),
+            conversations_store=ConversationsHistoryStore(),
+            group_resolver=_empty_group_resolver,
             closed_captions_pub=MagicMock()
         )
 
@@ -122,6 +137,8 @@ class TestSkillServersDestroy:
             dialogue_manager=MagicMock(),
             chatbot_client=MagicMock(),
             tts_client=MagicMock(),
+            conversations_store=ConversationsHistoryStore(),
+            group_resolver=_empty_group_resolver,
             closed_captions_pub=MagicMock()
         )
 
@@ -155,6 +172,8 @@ class TestSkillServersGoalCallbacks:
             dialogue_manager=self.mock_dialogue_manager,
             chatbot_client=self.mock_chatbot_client,
             tts_client=self.mock_tts_client,
+            conversations_store=ConversationsHistoryStore(),
+            group_resolver=_empty_group_resolver,
             closed_captions_pub=MagicMock()
         )
 
@@ -237,6 +256,8 @@ class TestSkillServersPriorityRejection:
             dialogue_manager=self.mock_dialogue_manager,
             chatbot_client=MagicMock(),
             tts_client=MagicMock(),
+            conversations_store=ConversationsHistoryStore(),
+            group_resolver=_empty_group_resolver,
             closed_captions_pub=MagicMock()
         )
         self.servers._is_active = True
@@ -289,6 +310,8 @@ class TestSkillServersCancelCallback:
             dialogue_manager=MagicMock(),
             chatbot_client=MagicMock(),
             tts_client=MagicMock(),
+            conversations_store=ConversationsHistoryStore(),
+            group_resolver=_empty_group_resolver,
             closed_captions_pub=MagicMock()
         )
 

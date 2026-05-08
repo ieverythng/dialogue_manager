@@ -24,7 +24,7 @@ from rclpy.publisher import Publisher
 from rclpy.subscription import Subscription
 
 from .chatbot_client import ChatbotClient
-from .dialogue import DialogueManager
+from .dialogue import DialogueManager, Interlocutor
 
 
 class SpeechHandler:
@@ -135,7 +135,9 @@ class SpeechHandler:
 
         # Find dialogue for this voice/person
         # TODO: Map voice_id to person_id via ROS4HRI
-        dialogue = self._dialogue_manager.get_dialogue_for_person(voice_id)
+        dialogue = self._dialogue_manager.get_dialogue_for_interlocutor(
+            Interlocutor(person_id=voice_id)
+        )
 
         if dialogue:
             self._node.get_logger().info(

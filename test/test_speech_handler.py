@@ -18,7 +18,12 @@ from unittest.mock import MagicMock
 from uuid import uuid4
 
 from chatbot_msgs.msg import DialogueRole
-from dialogue_manager.dialogue import Dialogue, DialogueManager, DialogueState
+from dialogue_manager.dialogue import (
+    Dialogue,
+    DialogueManager,
+    DialogueState,
+    Interlocutor,
+)
 from dialogue_manager.speech_handler import SpeechHandler
 from hri_msgs.msg import IdsList, LiveSpeech
 
@@ -246,7 +251,7 @@ class TestSpeechHandlerOnSpeech:
         chatbot_goal_id = uuid4()
         dialogue = Dialogue(
             role=role,
-            person_id='voice1',
+            interlocutor=Interlocutor(person_id='voice1'),
             state=DialogueState.ACTIVE,
             chatbot_goal_id=chatbot_goal_id
         )
