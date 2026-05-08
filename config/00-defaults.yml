@@ -5,7 +5,7 @@
     chatbot: "chatbot"
 
     # Enable default chat while node is active
-    enable_default_chat: false
+    enable_default_chat: true
 
     # Role for the default chat
     default_chat_role: "__default__"
