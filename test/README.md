@@ -12,7 +12,8 @@
 
 | File | Module under test | What it covers |
 |------|-------------------|----------------|
-| `test_dialogue.py` | `dialogue.py` | `DialogueState`, `Dialogue` dataclass, `DialogueManager` priority logic |
+| `test_dialogue.py` | `dialogue.py` | `DialogueState`, `Interlocutor` validation, `Utterance`, `Dialogue` (history, lazy `started_at`, summary invalidation), `DialogueManager` priority + interlocutor lookup |
+| `test_conversations_history.py` | `conversations_history.py` | `ConversationsHistoryStore` archival (person/group with member fan-out), pluggable context filters (default `EXCLUDE_ASK`), summary cache vs. summarizer callback, JSON load/save round-trip |
 | `test_tts_client.py` | `tts_client.py` | TTS action client lifecycle, `speak()`, `speak_and_wait()`, callbacks |
 | `test_chatbot_client.py` | `chatbot_client.py` | Chatbot interaction, `send_input()`, response handling, default chat |
 | `test_speech_handler.py` | `speech_handler.py` | Speech input subscription, chatbot forwarding, intent publishing |
