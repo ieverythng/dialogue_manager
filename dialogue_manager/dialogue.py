@@ -16,7 +16,6 @@
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
 from uuid import UUID, uuid4
 
 from chatbot_msgs.msg import DialogueRole
@@ -45,8 +44,8 @@ class Dialogue:
     priority: int = 128
     state: DialogueState = DialogueState.PENDING
     dialogue_id: UUID = field(default_factory=uuid4)  # Internal tracking ID
-    chatbot_goal_id: Optional[UUID] = None  # The chatbot action goal UUID
-    goal_handle: Optional[object] = None  # The skill action goal handle
+    chatbot_goal_id: UUID | None = None  # The chatbot action goal UUID
+    goal_handle: object | None = None  # The skill action goal handle
 
     def __post_init__(self):
         """Validate priority range."""
@@ -90,15 +89,15 @@ class DialogueManager:
         """Add a new dialogue to track."""
         self._dialogues[dialogue.dialogue_id] = dialogue
 
-    def remove_dialogue(self, dialogue_id: UUID) -> Optional[Dialogue]:
+    def remove_dialogue(self, dialogue_id: UUID) -> Dialogue | None:
         """Remove and return a dialogue by ID."""
         return self._dialogues.pop(dialogue_id, None)
 
-    def get_dialogue(self, dialogue_id: UUID) -> Optional[Dialogue]:
+    def get_dialogue(self, dialogue_id: UUID) -> Dialogue | None:
         """Get a dialogue by ID."""
         return self._dialogues.get(dialogue_id)
 
-    def get_dialogue_for_person(self, person_id: str) -> Optional[Dialogue]:
+    def get_dialogue_for_person(self, person_id: str) -> Dialogue | None:
         """Find an active dialogue for a specific person."""
         for dialogue in self._dialogues.values():
             if dialogue.person_id == person_id and dialogue.state == DialogueState.ACTIVE:
