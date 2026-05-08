@@ -9,6 +9,10 @@ The Dialogue Manager:
 - Sends responses to TTS for speech synthesis
 - Exposes three high-level skills: `chat`, `ask`, and `say`
 - Supports multi-modal expressions with synchronized gestures and expressions
+- Persists per-person/per-group conversation history across sessions
+
+See [doc/DIALOGUE_FLOW.md](doc/DIALOGUE_FLOW.md) for the conceptual model
+(dialogues, roles, interlocutors, conversations history, current context).
 
 
 ```mermaid
@@ -48,6 +52,7 @@ All topics/services exist only in `active` state. Actions exist in both `configu
 | `markup_action_timeout` | float | `10.0` | Default markup action timeout (s) |
 | `markup_libraries` | string[] | `["config/00-default_actions.yaml"]` | Markup definition files |
 | `disabled_markup_actions` | string[] | `["motion"]` | Markup actions to skip |
+| `conversations_storage_dir` | string | `"~/.ros/dialogue_manager/conversations"` | Where per-person/group histories are persisted (empty = in-memory only) |
 
 ### Topics
 
@@ -91,6 +96,21 @@ All topics/services exist only in `active` state. Actions exist in both `configu
 | Service | Interface | Description |
 |---------|-----------|-------------|
 | `<chatbot>/dialogue_interaction` | `chatbot_msgs/DialogueInteraction` | Send input, get response |
+
+## Conversations history
+
+Past dialogues are archived per-person and per-group under
+`conversations_storage_dir` (one JSON file per interlocutor, loaded on
+configure and saved on shutdown). When a new dialogue starts, the
+relevant history is built into a context string and pushed to the
+chatbot as a `__system__` priming message.
+
+ASK-role dialogues are excluded from the context by default. Older
+dialogues can be replaced by an LLM-generated summary; summaries are
+cached on the dialogue and persisted, so the LLM is not re-queried per
+turn. See [doc/DIALOGUE_FLOW.md](doc/DIALOGUE_FLOW.md) for the model and
+[TODO.md](TODO.md) for known follow-ups (context-delivery redesign,
+pyhri groups).
 
 ## Multi-modal expression markup
 
