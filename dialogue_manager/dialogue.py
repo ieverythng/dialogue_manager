@@ -59,12 +59,12 @@ class Interlocutor:
 
     @property
     def is_group(self) -> bool:
-        """True if this interlocutor refers to a group of persons."""
+        """Return True if this interlocutor refers to a group of persons."""
         return bool(self.group_id)
 
     @property
     def is_bound(self) -> bool:
-        """True if this interlocutor refers to a specific person or group."""
+        """Return True if this interlocutor refers to a specific person or group."""
         return bool(self.person_id) or bool(self.group_id)
 
     @property

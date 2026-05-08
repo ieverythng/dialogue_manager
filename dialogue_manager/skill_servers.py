@@ -14,11 +14,10 @@
 
 """Skill action servers for the Dialogue Manager."""
 
+from collections.abc import Callable
 import json
 import threading
 import time
-from collections.abc import Callable
-from typing import Optional
 
 from chatbot_msgs.msg import DialogueRole
 from communication_skills.action import Ask, Chat, Say
@@ -64,7 +63,7 @@ class SkillServers:
         expression_executor: ExpressionExecutor | None = None,
         closed_captions_pub: Publisher | None = None,
         callback_group: ReentrantCallbackGroup | None = None,
-        context_summarizer: Optional[Callable[[Dialogue], str]] = None,
+        context_summarizer: Callable[[Dialogue], str] | None = None,
     ):
         """Initialize skill servers."""
         self._node = node
@@ -77,6 +76,11 @@ class SkillServers:
         self._closed_captions_pub = closed_captions_pub
         self._callback_group = callback_group
         self._context_summarizer = context_summarizer
+
+        self._chat_server: ActionServer | None = None
+        self._ask_server: ActionServer | None = None
+        self._say_server: ActionServer | None = None
+        self._is_active = False
 
     def _now(self) -> float:
         """Return the current time in epoch seconds, from the node clock."""
@@ -114,11 +118,6 @@ class SkillServers:
         )
         if context:
             self._chatbot_client.inject_context(dialogue.dialogue_id, context)
-
-        self._chat_server: ActionServer | None = None
-        self._ask_server: ActionServer | None = None
-        self._say_server: ActionServer | None = None
-        self._is_active = False
 
     def set_active(self, active: bool) -> None:
         """Set whether the node is in active state."""

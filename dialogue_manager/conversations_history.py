@@ -55,6 +55,7 @@ class ConversationsHistoryStore:
     storage_dir
         Directory under which `person/<id>.json` and `group/<id>.json` are
         written. If ``None``, the store is in-memory only.
+
     """
 
     def __init__(
