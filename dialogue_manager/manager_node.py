@@ -336,6 +336,11 @@ class DialogueManagerNode(LifecycleNode):
             )
             return
 
+        if dialogue_act.act == 'notify_completion' and self._ask_chatbot_for_planner_reply(
+            dialogue_act
+        ):
+            return
+
         speech_text = _planner_dialogue_text(dialogue_act)
         if not speech_text:
             self.get_logger().debug(
@@ -356,6 +361,21 @@ class DialogueManagerNode(LifecycleNode):
             speech_text,
             priority=_planner_tts_priority(dialogue_act.priority),
         )
+
+    def _ask_chatbot_for_planner_reply(self, dialogue_act: PlannerDialogueAct) -> bool:
+        """Route completed planner tasks back through chatbot_llm for wording."""
+        if self._chatbot_client is None:
+            return False
+        prompt = _planner_completion_prompt(dialogue_act)
+        if not prompt:
+            return False
+        sent = self._chatbot_client.send_default_system_input(prompt)
+        if sent:
+            self.get_logger().info(
+                '[PLANNER ACT] Requested chatbot wording for goal_id=%s'
+                % dialogue_act.goal_id
+            )
+        return sent
 
 
 def _planner_dialogue_text(dialogue_act: PlannerDialogueAct) -> str:
@@ -378,6 +398,42 @@ def _planner_dialogue_text(dialogue_act: PlannerDialogueAct) -> str:
     if dialogue_act.reason:
         return str(dialogue_act.reason).strip()
     return fallback_by_act.get(act, '').strip()
+
+
+def _planner_completion_prompt(dialogue_act: PlannerDialogueAct) -> str:
+    """Build a system prompt asking chatbot_llm to phrase completion naturally."""
+    context = dict(dialogue_act.context or {})
+    goal_text = str(context.get('goal_text', '')).strip()
+    result_summary = str(context.get('result_summary', '')).strip()
+    text_hint = str(dialogue_act.text_hint or '').strip()
+    requested_intents = context.get('requested_intents', [])
+    if not isinstance(requested_intents, list):
+        requested_intents = []
+
+    parts = [
+        'The robot has finished executing a user-requested task.',
+        'Reply to the human with one short, natural sentence about the completed task.',
+        'Do not propose new actions, mention planner internals, or repeat the initial acknowledgement.',
+        (
+            'Use only the execution result and suggested factual content as facts; if they do not '
+            'answer whether a requested person, object, or target was found, say that no confirmed '
+            'result was available instead of guessing.'
+        ),
+    ]
+    if goal_text:
+        parts.append('Original user request: %s' % goal_text)
+    if result_summary:
+        parts.append('Execution result: %s' % result_summary)
+    if text_hint:
+        parts.append('Suggested factual content: %s' % text_hint)
+    clean_intents = [
+        str(item).strip()
+        for item in requested_intents
+        if str(item).strip()
+    ]
+    if clean_intents:
+        parts.append('Normalized intents: %s' % ', '.join(clean_intents))
+    return '\n'.join(parts)
 
 
 def _planner_tts_priority(priority_name: str) -> int:

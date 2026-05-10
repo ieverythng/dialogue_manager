@@ -214,6 +214,25 @@ class TestChatbotClientSendInput:
 
         assert dialogue.state == DialogueState.WAITING_RESPONSE
 
+    def test_send_default_system_input_uses_default_dialogue(self):
+        """Planner dialogue pass uses active default dialogue as system input."""
+        mock_interaction_client = MagicMock()
+        mock_interaction_client.call_async.return_value = MagicMock()
+        self.client._interaction_client = mock_interaction_client
+
+        role = DialogueRole(name='__default__')
+        chatbot_goal_id = uuid4()
+        dialogue = Dialogue(role=role, chatbot_goal_id=chatbot_goal_id)
+        self.mock_dialogue_manager.add_dialogue(dialogue)
+        self.client._default_dialogue_id = dialogue.dialogue_id
+
+        result = self.client.send_default_system_input('Summarize the completed task.')
+
+        assert result is True
+        request = mock_interaction_client.call_async.call_args.args[0]
+        assert request.user_id == '__system__'
+        assert request.response_expected is True
+
 
 class TestChatbotClientDestroy:
     """Tests for destroy method."""

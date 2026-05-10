@@ -15,6 +15,8 @@
 """Integration tests for manager_node.py lifecycle node."""
 
 from dialogue_manager.manager_node import DialogueManagerNode
+from dialogue_manager.manager_node import _planner_completion_prompt
+from planner_common import PlannerDialogueAct
 import pytest
 import rclpy
 from rclpy.lifecycle import TransitionCallbackReturn
@@ -38,6 +40,30 @@ class TestDialogueManagerNodeInit:
         assert node.get_name() == 'dialogue_manager'
 
         node.destroy_node()
+
+
+def test_planner_completion_prompt_keeps_chatbot_as_wording_owner():
+    """Completion prompt carries facts without exposing planner internals."""
+    act = PlannerDialogueAct.from_payload(
+        {
+            'act': 'notify_completion',
+            'goal_id': 'goal_1',
+            'text_hint': 'I am looking down now.',
+            'context': {
+                'goal_text': 'move your head up and down',
+                'result_summary': 'head motion completed',
+                'requested_intents': ['head_nod'],
+            },
+        }
+    )
+
+    prompt = _planner_completion_prompt(act)
+
+    assert 'one short, natural sentence' in prompt
+    assert 'move your head up and down' in prompt
+    assert 'head motion completed' in prompt
+    assert 'planner internals' in prompt
+    assert 'no confirmed result was available' in prompt
 
     def test_parameters_declared(self, rclpy_context):
         """All parameters are declared on creation."""

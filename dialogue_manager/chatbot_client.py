@@ -284,6 +284,22 @@ class ChatbotClient:
         )
         return True
 
+    def send_default_system_input(
+        self,
+        text: str,
+        response_callback: Optional[Callable] = None,
+    ) -> bool:
+        """Send a system-authored prompt through the default chatbot dialogue."""
+        if self._default_dialogue_id is None:
+            self._node.get_logger().warn('[CHATBOT] Default dialogue is not active')
+            return False
+        return self.send_input(
+            self._default_dialogue_id,
+            '__system__',
+            text,
+            response_callback=response_callback,
+        )
+
     def _on_response(
         self,
         future,
