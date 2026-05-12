@@ -101,22 +101,22 @@ class DialogueView(QWidget):
         self._status_label.setObjectName('status_label')
         outer.addWidget(self._status_label)
 
-        splitter = QSplitter(Qt.Horizontal, self)
+        splitter = QSplitter(Qt.Vertical, self)
 
-        # ----- Left: dialogue tree (active + archived) -----
+        # ----- Top: dialogue tree (active + archived) -----
         self._tree = QTreeWidget()
         self._tree.setColumnCount(2)
         self._tree.setHeaderLabels(['Dialogue', 'Updated'])
+        self._tree.header().setStretchLastSection(False)
         self._tree.header().setSectionResizeMode(
             0, QHeaderView.Stretch
         )
-        self._tree.header().setSectionResizeMode(
-            1, QHeaderView.ResizeToContents
-        )
+        self._tree.header().setSectionResizeMode(1, QHeaderView.Fixed)
+        self._tree.setColumnWidth(1, 70)
         self._tree.itemSelectionChanged.connect(self._on_select)
         splitter.addWidget(self._tree)
 
-        # ----- Right: detail pane -----
+        # ----- Bottom: detail pane -----
         detail = QWidget()
         detail_layout = QVBoxLayout(detail)
 
