@@ -741,7 +741,7 @@ class SkillServers:
         primary = self._dialogue_manager.get_dialogue_for_interlocutor(
             interlocutor
         )
-        if primary is not None:
+        if primary is not None and primary.interlocutor_present:
             result.append(primary)
 
         if interlocutor.is_group:
@@ -749,7 +749,8 @@ class SkillServers:
                 d = self._dialogue_manager.get_dialogue_for_interlocutor(
                     Interlocutor(person_id=member_id)
                 )
-                if d is not None and d not in result:
+                if (d is not None and d not in result
+                        and d.interlocutor_present):
                     result.append(d)
             return result
 
@@ -760,7 +761,8 @@ class SkillServers:
                 d = self._dialogue_manager.get_dialogue_for_interlocutor(
                     Interlocutor(group_id=group_id)
                 )
-                if d is not None and d not in result:
+                if (d is not None and d not in result
+                        and d.interlocutor_present):
                     result.append(d)
             for co_member_id in self._group_handler.co_members_of(
                 interlocutor.person_id
@@ -768,7 +770,8 @@ class SkillServers:
                 d = self._dialogue_manager.get_dialogue_for_interlocutor(
                     Interlocutor(person_id=co_member_id)
                 )
-                if d is not None and d not in result:
+                if (d is not None and d not in result
+                        and d.interlocutor_present):
                     result.append(d)
         return result
 
@@ -788,6 +791,7 @@ class SkillServers:
             d for d in self._dialogue_manager.active_dialogues.values()
             if d.state in (DialogueState.ACTIVE, DialogueState.WAITING_RESPONSE)
             and d.interlocutor.is_bound
+            and d.interlocutor_present
         ]
         if not active_dialogues:
             self._node.get_logger().debug(

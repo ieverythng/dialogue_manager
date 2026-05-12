@@ -1,3 +1,4 @@
+[A joins]
 A:
     - hello!
 R:

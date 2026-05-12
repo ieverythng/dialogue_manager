@@ -130,13 +130,35 @@ class SpeechHandler:
                 10
             )
             self._voice_subscriptions[voice_id] = sub
+            # If this voice already has a paused dialogue (they previously
+            # spoke, left, and now returned), reactivate it.
+            self._set_person_presence(voice_id, True)
 
         for voice_id in self._tracked_voices - current_voices:
             if voice_id in self._voice_subscriptions:
                 self._node.destroy_subscription(self._voice_subscriptions.pop(voice_id))
                 self._node.get_logger().info(f'[SPEECH] Unsubscribed from voice {voice_id}')
+            # Mark their dialogue paused so subsequent broadcasts and
+            # co-member fan-out skip it.
+            self._set_person_presence(voice_id, False)
 
         self._tracked_voices = current_voices
+
+    def _set_person_presence(self, voice_id: str, present: bool) -> None:
+        """Update the `interlocutor_present` flag on a person's dialogue."""
+        dialogue = self._dialogue_manager.get_dialogue_for_interlocutor(
+            Interlocutor(person_id=voice_id)
+        )
+        if dialogue is None or dialogue.interlocutor_present == present:
+            return
+        dialogue.interlocutor_present = present
+        self._node.get_logger().info(
+            f'[SPEECH] {voice_id} '
+            f'{"present" if present else "left"} — '
+            f'dialogue {dialogue.dialogue_id} '
+            f'{"reactivated" if present else "paused"}'
+        )
+        self._dialogue_manager.notify_change(dialogue.dialogue_id)
 
     def _on_speech(self, voice_id: str, msg: LiveSpeech) -> None:
         """Handle incoming speech from a user."""
@@ -195,8 +217,8 @@ class SpeechHandler:
         """Return every dialogue that should receive `voice_id`'s utterance.
 
         Order is: speaker → groups → co-members. Auto-spawns missing
-        dialogues if default-chat is enabled; otherwise only returns
-        already-active dialogues.
+        dialogues if default-chat is enabled. Co-members whose own voice
+        is no longer tracked are skipped (they're not currently here).
         """
         speaker_dialogue = self._get_or_spawn_person_dialogue(voice_id)
         result: list[Dialogue] = [speaker_dialogue] if speaker_dialogue else []
@@ -211,8 +233,13 @@ class SpeechHandler:
 
         for co_member_id in self._group_handler.co_members_of(voice_id):
             pd = self._get_or_spawn_person_dialogue(co_member_id)
-            if pd is not None and pd not in result:
-                result.append(pd)
+            if pd is None or pd in result:
+                continue
+            # Skip silent co-members whose interlocutor has left — their
+            # dialogue is paused and shouldn't accumulate utterances.
+            if not pd.interlocutor_present:
+                continue
+            result.append(pd)
 
         return result
 

@@ -57,7 +57,7 @@ from dialogue_manager.dialogue import (
 from dialogue_manager.group_handler import GroupHandler
 from dialogue_manager.skill_servers import SkillServers
 from dialogue_manager.speech_handler import SpeechHandler
-from hri_msgs.msg import Group, LiveSpeech
+from hri_msgs.msg import Group, IdsList, LiveSpeech
 import pytest
 
 
@@ -121,23 +121,31 @@ class _Scenario:
         if dialogue is None:
             return
         dialogue.state = DialogueState.COMPLETED
-        # NOTE: by the time this callback fires GroupHandler has already
-        # removed the group from its map, so members_of() returns []. This
-        # mirrors the production behaviour today (manager_node has the
-        # same limitation) — fan-out into per-member personal histories
-        # therefore doesn't happen on dispersal in the test either.
-        self.store.archive(dialogue, group_members=None)
+        # GroupHandler still has the membership in its map at callback
+        # time (deletion happens after the callback returns), so
+        # `members_of()` resolves correctly — driving the per-member
+        # and per-subset archive fan-out.
+        members = self.group_handler.members_of(group_id)
+        self.store.archive(dialogue, group_members=members)
         self.dialogue_manager.remove_dialogue(dialogue.dialogue_id)
 
     # ----------------------------------------------- presence + groups
 
     def join(self, person_id: str) -> None:
         self.present.add(person_id)
+        self._publish_voices_tracked()
         self._refresh_group()
 
     def leave(self, person_id: str) -> None:
         self.present.discard(person_id)
+        self._publish_voices_tracked()
         self._refresh_group()
+
+    def _publish_voices_tracked(self) -> None:
+        """Mirror the latched /humans/voices/tracked publication."""
+        msg = IdsList()
+        msg.ids = sorted(self.present)
+        self.speech_handler._on_voices_tracked(msg)
 
     def _refresh_group(self) -> None:
         members = sorted(self.present)
@@ -243,7 +251,9 @@ class _Scenario:
         if m:
             members_str, n = m.group(1), int(m.group(2))
             group_id = self._group_id_for(members_str)
-            actual = self._count_history(Interlocutor(group_id=group_id))
+            target = Interlocutor(group_id=group_id)
+            self._require_group_realised(target)
+            actual = self._count_history(target)
             assert actual == n, f'expected {n}, got {actual}'
             return
 
@@ -254,29 +264,127 @@ class _Scenario:
         if m:
             word, members_str = m.group(1), m.group(2)
             group_id = self._group_id_for(members_str)
-            blob = self._history_text(Interlocutor(group_id=group_id))
+            target = Interlocutor(group_id=group_id)
+            self._require_group_realised(target)
+            blob = self._history_text(target)
             assert word not in blob, \
                 f'{word!r} unexpectedly in group {group_id} history'
             return
 
+        m = re.fullmatch(
+            r'"([^"]+)" appears in \{([^}]+)\} group history', text
+        )
+        if m:
+            word, members_str = m.group(1), m.group(2)
+            group_id = self._group_id_for(members_str)
+            target = Interlocutor(group_id=group_id)
+            self._require_group_realised(target)
+            blob = self._history_text(target)
+            assert word in blob, \
+                f'{word!r} not in group {group_id} history'
+            return
+
+        m = re.fullmatch(r'\{([^}]+)\} group does not exists?', text)
+        if m:
+            members_str = m.group(1)
+            group_id = self._group_id_for(members_str)
+            target = Interlocutor(group_id=group_id)
+            assert not self._group_realised(target), \
+                f'{group_id} has been realised as a dialogue'
+            return
+
         raise ValueError(f'unrecognised assertion: {text!r}')
+
+    def _group_realised(self, target: Interlocutor) -> bool:
+        """True if a dialogue with exactly this group's members exists.
+
+        Spans active and archived dialogues — a group "exists" once any
+        dialogue with that exact member set has ever been spawned, even
+        if it's been archived since.
+        """
+        for d in self.dialogue_manager.active_dialogues.values():
+            if d.interlocutor == target:
+                return True
+        for d in self.store.history_for(target):
+            if d.interlocutor == target:
+                return True
+        return False
+
+    def _require_group_realised(self, target: Interlocutor) -> None:
+        """Reject history queries for groups that never formed."""
+        if not self._group_realised(target):
+            raise AssertionError(
+                f'{target.group_id} group has never been realised as a '
+                f'dialogue — cannot query its history. Use '
+                f'"{{X,Y,...}} group does not exist" instead.'
+            )
 
     @staticmethod
     def _group_id_for(members_str: str) -> str:
         members = sorted(s.strip() for s in members_str.split(','))
         return 'group_' + '_'.join(members)
 
-    def _all_dialogues_for(self, interlocutor: Interlocutor) -> list[Dialogue]:
-        """Return every Dialogue (active or archived) matching `interlocutor`.
+    @staticmethod
+    def _members_of_group_id(group_id: str) -> frozenset[str]:
+        """Recover the member set from a DSL-formatted group_id.
 
-        "Matching" means the dialogue's *own* interlocutor equals
-        `interlocutor` — we do not pick up group dialogues that happen
-        to have been fanned out under a member's archive key, since
-        the DSL's "A history" refers to A's own conversational record,
-        not group conversations A took part in.
+        Our test DSL builds group ids as `'group_<sorted_members_joined_
+        by_underscore>'`, e.g. `'group_A_B_C'`. Returns an empty set for
+        any group id that doesn't follow that convention.
+        """
+        if not group_id.startswith('group_'):
+            return frozenset()
+        body = group_id[len('group_'):]
+        if not body:
+            return frozenset()
+        return frozenset(body.split('_'))
+
+    def _all_dialogues_for(self, interlocutor: Interlocutor) -> list[Dialogue]:
+        """Return every Dialogue (active or archived) for `interlocutor`.
+
+        Semantics:
+
+        - **Person**: only dialogues whose own interlocutor equals the
+          requested person. Archived group dialogues fanned out into
+          person keys are intentionally excluded — the person's own
+          dialogue already records every utterance they witnessed,
+          because the SpeechHandler records co-member utterances into
+          each member's personal dialogue at speech time.
+
+        - **Group**: any dialogue (active or archived) whose own
+          member set is a *superset* of the requested set. Query-time
+          superset matching is used rather than archive-time fan-out
+          so this scales: a 40-person group doesn't materialize 2^40
+          subset archive entries. Conceptually "{B,C}'s history" =
+          every conversation B and C took part in together, whether
+          alone or as part of a larger gathering.
         """
         seen: set = set()
         result: list[Dialogue] = []
+
+        if interlocutor.is_group:
+            requested = self._members_of_group_id(interlocutor.group_id)
+
+            def covers(d: Dialogue) -> bool:
+                if not d.interlocutor.is_group:
+                    return False
+                d_members = self._members_of_group_id(d.interlocutor.group_id)
+                return bool(d_members) and requested.issubset(d_members)
+
+            for d in self.dialogue_manager.active_dialogues.values():
+                if covers(d) and d.dialogue_id not in seen:
+                    seen.add(d.dialogue_id)
+                    result.append(d)
+            # Walk every archived bucket — a {A,B,C} dialogue lives
+            # only under its own group:A_B_C key, but querying for
+            # {B,C} should still surface it (B and C were both there).
+            for bucket in self.store._by_interlocutor.values():
+                for d in bucket:
+                    if covers(d) and d.dialogue_id not in seen:
+                        seen.add(d.dialogue_id)
+                        result.append(d)
+            return result
+
         for d in self.dialogue_manager.active_dialogues.values():
             if d.interlocutor == interlocutor and d.dialogue_id not in seen:
                 seen.add(d.dialogue_id)
@@ -376,4 +484,22 @@ class _Scenario:
 def test_dialogue_1_dsl():
     """Execute test/dialogues/dialogue_1.md and verify every CHECK assertion."""
     source = (DSL_DIR / 'dialogue_1.md').read_text()
+    _Scenario().run(source)
+
+
+def test_dialogue_2_dsl():
+    """Execute test/dialogues/dialogue_2.md and verify every CHECK assertion."""
+    source = (DSL_DIR / 'dialogue_2.md').read_text()
+    _Scenario().run(source)
+
+
+def test_dialogue_3_dsl():
+    """Execute test/dialogues/dialogue_3.md and verify every CHECK assertion."""
+    source = (DSL_DIR / 'dialogue_3.md').read_text()
+    _Scenario().run(source)
+
+
+def test_dialogue_4_dsl():
+    """Execute test/dialogues/dialogue_4.md and verify every CHECK assertion."""
+    source = (DSL_DIR / 'dialogue_4.md').read_text()
     _Scenario().run(source)

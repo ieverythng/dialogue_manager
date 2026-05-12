@@ -472,6 +472,56 @@ class TestSpeechHandlerGroupRouting:
         # Only one dialogue total.
         assert len(self.mock_dialogue_manager.active_dialogues) == 1
 
+    def test_leaving_voice_pauses_dialogue(self):
+        """When a voice disappears, its person dialogue is flipped to paused."""
+        self.group_handler.groups_containing.side_effect = lambda pid: []
+        self.group_handler.co_members_of.side_effect = lambda pid: set()
+        # Alice gets tracked (in any real run, this precedes her speech).
+        tracked = IdsList()
+        tracked.ids = ['alice']
+        self.handler._on_voices_tracked(tracked)
+        # Alice speaks → her dialogue is spawned.
+        msg = LiveSpeech()
+        msg.final = 'hi'
+        self.handler._on_speech('alice', msg)
+        alice_d = self.mock_dialogue_manager.get_dialogue_for_interlocutor(
+            Interlocutor(person_id='alice')
+        )
+        assert alice_d.interlocutor_present is True
+
+        # /humans/voices/tracked drops alice
+        empty = IdsList()
+        empty.ids = []
+        self.handler._on_voices_tracked(empty)
+
+        assert alice_d.interlocutor_present is False
+
+    def test_returning_voice_reactivates_dialogue(self):
+        """A voice reappearing flips the existing dialogue back to present."""
+        self.group_handler.groups_containing.side_effect = lambda pid: []
+        self.group_handler.co_members_of.side_effect = lambda pid: set()
+        tracked = IdsList()
+        tracked.ids = ['alice']
+        self.handler._on_voices_tracked(tracked)
+        msg = LiveSpeech()
+        msg.final = 'hi'
+        self.handler._on_speech('alice', msg)
+        # Pause alice.
+        empty = IdsList()
+        empty.ids = []
+        self.handler._on_voices_tracked(empty)
+        alice_d = self.mock_dialogue_manager.get_dialogue_for_interlocutor(
+            Interlocutor(person_id='alice')
+        )
+        assert alice_d.interlocutor_present is False
+
+        # Alice's voice returns.
+        back = IdsList()
+        back.ids = ['alice']
+        self.handler._on_voices_tracked(back)
+
+        assert alice_d.interlocutor_present is True
+
 
 class TestSpeechHandlerIntentPublishing:
     """Tests for intent publishing."""

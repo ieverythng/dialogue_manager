@@ -37,3 +37,35 @@ defaults to a trivial fallback that renders the session's utterances as
 text. An LLM-backed implementation that calls `chatbot/summarize` (when
 the chatbot exposes it) would give meaningfully cumulative summaries
 and improve next-session pre-fill quality.
+
+## Lazy subgroup history pre-fill for LLM context
+
+The test infrastructure already computes "{B,C}'s history" as the
+query-time superset of past dialogues that include B and C
+(`test_dialogue_dsl.py::_all_dialogues_for`). The runtime LLM
+context-builder doesn't yet do the same: when a new `{B,C}` group
+dialogue spawns, it currently only carries forward the per-person
+summaries via `ConversationsHistoryStore.preload_into`.
+
+What's missing for full parity with `DIALOGUE_FLOW.md`: at spawn
+time for a new group `{S}`, lazily pre-fill the new dialogue's
+history with utterances from every archived dialogue whose member
+set is a superset of `{S}` (the conversations they were both part
+of). This is the lazy analogue of the per-person preload, and
+scales — no archive-time combinatorial fan-out, just a one-time
+scan when the subgroup actually forms.
+
+Done lazily it stays cheap even for large gatherings: a 40-person
+crowd doesn't materialize 2^40 subset archive entries; subgroup
+dialogues are created only when ROS4HRI actually reports them.
+
+## Canonical group_id from member set
+
+Group dialogues currently inherit ROS4HRI's `group_id` from
+`/humans/interactions/groups`, which is opaque ("g1", "tracking_42",
+…). A canonical convention `'group_<sorted_members_joined_by_
+underscore>'` would make subgroup-history queries straightforward
+and predictable (a frozenset of members maps to exactly one
+group_id). manager_node would need a small canonicalisation step
+when spawning group dialogues. The DSL tests already use this
+convention.

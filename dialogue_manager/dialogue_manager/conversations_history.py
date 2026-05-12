@@ -109,6 +109,7 @@ class ConversationsHistoryStore:
         self._append(dialogue.interlocutor, dialogue)
 
         if dialogue.interlocutor.is_group and group_members:
+            # Fan out into each member's personal conversations history.
             for member_id in group_members:
                 if not member_id:
                     continue

@@ -125,6 +125,13 @@ class Dialogue:
     summary_generated_at: float | None = None
     chatbot_goal_id: UUID | None = None  # The chatbot action goal UUID
     goal_handle: object | None = None  # The skill action goal handle
+    # Whether the dialogue's interlocutor is currently present (their voice
+    # is tracked, or — for a group — they are still being published in
+    # /humans/interactions/groups). False means the dialogue is "paused":
+    # the conversation isn't over (history is preserved), but new broadcast
+    # Says and co-member fan-out should skip it until the interlocutor
+    # returns. State stays ACTIVE — the two notions are orthogonal.
+    interlocutor_present: bool = True
     # Hook fired after any state-changing mutation on this dialogue
     # (add_utterance for now). Set by DialogueManager.add_dialogue so the
     # debug-state publisher can react to changes without invasive plumbing.

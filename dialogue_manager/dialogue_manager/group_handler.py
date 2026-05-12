@@ -84,11 +84,13 @@ class GroupHandler:
         members = frozenset(m for m in msg.members if m)
 
         if not members:
-            # Group dispersed. Drop from tracking and notify.
+            # Group dispersed. Fire the callback *before* removing the
+            # entry so callees can still resolve `members_of(group_id)`
+            # — necessary for archive-time fan-out into per-member and
+            # per-subset histories.
             if group_id in self._groups:
-                del self._groups[group_id]
                 self._node.get_logger().info(
-                    f'[GROUPS] Group {group_id} dispersed'
+                    f'[GROUPS] Group {group_id} dispersing'
                 )
                 try:
                     self._on_group_dispersed(group_id)
@@ -96,6 +98,7 @@ class GroupHandler:
                     self._node.get_logger().warn(
                         f'[GROUPS] on_group_dispersed callback failed: {exc}'
                     )
+                del self._groups[group_id]
             return
 
         previous = self._groups.get(group_id)
