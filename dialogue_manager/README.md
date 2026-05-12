@@ -1,19 +1,29 @@
 # dialogue_manager
 
-A ROS2 lifecycle node that handles multi-modal communication between the robot and humans.
+A ROS2 lifecycle node that handles multi-modal communication between
+the robot and humans.
 
 ## Overview
 
 The Dialogue Manager:
-- Provides responses to human utterances using an external chatbot backend
-- Sends responses to TTS for speech synthesis
-- Exposes three high-level skills: `chat`, `ask`, and `say`
-- Supports multi-modal expressions with synchronized gestures and expressions
-- Persists per-person/per-group conversation history across sessions
+- Tracks every conversation the robot is engaged in — per person and
+  per ROS4HRI group — including a chronological history of utterances
+  and pre-filled context from prior sessions.
+- Optionally consults an external chatbot backend (e.g. an LLM) to
+  generate responses; works without one, emitting `RAW_USER_INPUT`
+  intents for a controlling script to handle.
+- Speaks via a Say sub-skill (`/tts/say` by default), with markup
+  supporting synchronised gestures, expressions, and LED effects.
+- Exposes three high-level skills: `/skill/chat`, `/skill/ask`,
+  `/skill/say`.
+- Persists per-interlocutor history to disk and pre-fills new sessions
+  with the most recent summary so the robot can pick up where it left
+  off.
+- Publishes a JSON debug snapshot on `~/debug_state` for live
+  introspection via the [`rqt_dialogues`](../rqt_dialogues) plugin.
 
-See [doc/DIALOGUE_FLOW.md](doc/DIALOGUE_FLOW.md) for the conceptual model
-(dialogues, roles, interlocutors, conversations history, current context).
-
+See [doc/DIALOGUE_FLOW.md](doc/DIALOGUE_FLOW.md) for the conceptual
+model and end-to-end flow.
 
 ```mermaid
 graph LR
@@ -23,36 +33,40 @@ graph LR
         SAY["/skill/say"]
         DM["Dialogue<br/>Tracking"]
     end
-    
+
     MC["Mission<br/>Controller"] --> CHAT & ASK & SAY
-    
+
     SPEECH["/humans/voices/*/speech"] --> DM
-    
-    DM --> CB["Chatbot<br/>Engine"]
-    DM --> TTS["TTS<br/>Engine"]
+    GROUPS["/humans/interactions/groups"] --> DM
+
+    DM --> CB["Chatbot<br/>Backend"]
+    DM --> TTS["Say sub-skill<br/>/tts/say"]
     DM --> INT["/intents"]
     DM --> CC["~/closed_captions"]
+    DM --> DBG["~/debug_state"]
 ```
 
 ## ROS API
 
-All topics/services exist only in `active` state. Actions exist in both `configured` and `active` states but reject goals in the former.
+All topics/services exist only in `active` state. Actions exist in
+both `configured` and `active` states but reject goals in the former.
 
 ### Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `chatbot` | string | `"chatbot"` | Chatbot node FQN prefix. Empty = disabled |
-| `enable_default_chat` | bool | `false` | Enable default chat while active |
-| `default_chat_role` | string | `"__default__"` | Role for default chat |
-| `default_chat_configuration` | string | `""` | Configuration for default chat |
-| `chatbot_startup_timeout` | float | `30.0` | Max wait for chatbot startup (s) |
-| `chatbot_response_timeout` | float | `5.0` | Max wait for chatbot response (s) |
-| `multi_modal_expression_timeout` | float | `60.0` | Max expression duration (s) |
-| `markup_action_timeout` | float | `10.0` | Default markup action timeout (s) |
-| `markup_libraries` | string[] | `["config/00-default_actions.yaml"]` | Markup definition files |
-| `disabled_markup_actions` | string[] | `["motion"]` | Markup actions to skip |
-| `conversations_storage_dir` | string | `"~/.ros/dialogue_manager/conversations"` | Where per-person/group histories are persisted (empty = in-memory only) |
+| `chatbot` | string | `"chatbot"` | Chatbot node FQN prefix. Empty = disabled (passive history-only mode). |
+| `say_action` | string | `"/tts/say"` | Action name of the Say sub-skill (the TTS frontend). |
+| `enable_default_chat` | bool | `false` | When true, auto-spawn a per-person `__default__` dialogue on first utterance from a tracked voice. |
+| `default_chat_role` | string | `"__default__"` | Role for auto-spawned default dialogues. |
+| `default_chat_configuration` | string | `""` | Role configuration JSON for auto-spawned default dialogues. |
+| `chatbot_startup_timeout` | float | `30.0` | Max wait for chatbot startup (s). |
+| `chatbot_response_timeout` | float | `5.0` | Max wait for chatbot response (s). |
+| `multi_modal_expression_timeout` | float | `60.0` | Max expression duration (s). |
+| `markup_action_timeout` | float | `10.0` | Default markup action timeout (s). |
+| `markup_libraries` | string[] | `["config/00-default_actions.yaml"]` | Markup definition files. |
+| `disabled_markup_actions` | string[] | `["motion"]` | Markup actions to skip. |
+| `conversations_storage_dir` | string | `"~/.ros/dialogue_manager/conversations"` | Where per-person/group histories are persisted (empty = in-memory only). |
 
 ### Topics
 
@@ -60,80 +74,96 @@ All topics/services exist only in `active` state. Actions exist in both `configu
 
 | Topic | Type | Description |
 |-------|------|-------------|
-| `/humans/voices/tracked` | `hri_msgs/IdsList` | Tracked voice IDs |
-| `/humans/voices/<id>/speech` | `hri_msgs/LiveSpeech` | User speech input |
+| `/humans/voices/tracked` | `hri_msgs/IdsList` | Tracked voice IDs (TRANSIENT_LOCAL). |
+| `/humans/voices/<id>/speech` | `hri_msgs/LiveSpeech` | User speech input per voice. |
+| `/humans/interactions/groups` | `hri_msgs/Group` | Group membership (TRANSIENT_LOCAL); empty `members` signals dispersal. |
 
 #### Published
 
 | Topic | Type | Description |
 |-------|------|-------------|
-| `~/closed_captions` | `hri_actions_msgs/ClosedCaption` | Captions for all speech |
-| `~/robot_speech` | `std_msgs/String` | Current word being spoken |
-| `~/currently_waiting_for_chatbot_response` | `std_msgs/Bool` | True while waiting for chatbot |
-| `/intents` | `hri_actions_msgs/Intent` | Detected intents |
-| `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | Node diagnostics |
+| `~/closed_captions` | `hri_actions_msgs/ClosedCaption` | Captions for all speech (user + robot). |
+| `~/robot_speech` | `std_msgs/String` | Current word being spoken (per-word Say feedback). |
+| `~/currently_waiting_for_chatbot_response` | `std_msgs/Bool` | True while waiting for chatbot. |
+| `~/debug_state` | `std_msgs/String` | JSON snapshot of internal state (TRANSIENT_LOCAL, on-change). |
+| `/intents` | `hri_actions_msgs/Intent` | Detected intents (including `RAW_USER_INPUT`). |
+| `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | Node diagnostics. |
 
 ### Action Servers
 
-
 | Action | Interface | Description |
 |--------|-----------|-------------|
-| `/skill/chat` | `communication_skills/Chat` | Start dialogue with defined role |
-| `/skill/ask` | `communication_skills/Ask` | Ask question and get structured answers |
-| `/skill/say` | `communication_skills/Say` | Speak multi-modal expression |
+| `/skill/chat` | `communication_skills/Chat` | Start a long-lived dialogue with a defined role. |
+| `/skill/ask` | `communication_skills/Ask` | Ask a question and capture the answer. |
+| `/skill/say` | `communication_skills/Say` | Speak a multi-modal expression. |
 
-**Priority handling:** Goals are rejected if `meta.priority` ≤ any ongoing dialogue or expression.
+**Priority handling.** Chat/Ask and Say compete on different channels:
+- **Chat / Ask** (new dialogue): rejected if `priority ≤ highest
+  active dialogue priority`. Strict preemption — a new dialogue must
+  outrank existing ones.
+- **Say** (one-shot expression): rejected if `priority < current
+  expression priority`. Cooperative — a Say can speak alongside any
+  active dialogue and preempts an in-flight expression of equal or
+  lower priority.
 
 ### Action Clients
 
 | Action | Interface | Description |
 |--------|-----------|-------------|
-| `<chatbot>/start_dialogue` | `chatbot_msgs/Dialogue` | Open dialogue channel |
-| `tts_engine/tts` | `tts_msgs/TTS` | Text-to-speech |
+| `<chatbot>/start_dialogue` | `chatbot_msgs/Dialogue` | Open a chatbot dialogue (one per per-person Dialogue). |
+| `<say_action>` (default `/tts/say`) | `communication_skills/Say` | Speak markup-stripped text. |
 
 ### Service Clients
 
 | Service | Interface | Description |
 |---------|-----------|-------------|
-| `<chatbot>/dialogue_interaction` | `chatbot_msgs/DialogueInteraction` | Send input, get response |
+| `<chatbot>/dialogue_interaction` | `chatbot_msgs/DialogueInteraction` | Send input, get response. |
+| `<chatbot>/summarize` | (optional) | Used when present to LLM-summarise old dialogues at session end. |
 
 ## Conversations history
 
 Past dialogues are archived per-person and per-group under
-`conversations_storage_dir` (one JSON file per interlocutor, loaded on
-configure and saved on shutdown). When a new dialogue starts, the
-relevant history is built into a context string and pushed to the
-chatbot as a `__system__` priming message.
+`conversations_storage_dir` (one JSON file per interlocutor, loaded
+on configure, saved periodically and on shutdown). Group dialogues
+are also fanned out into each member's personal history.
 
-ASK-role dialogues are excluded from the context by default. Older
-dialogues can be replaced by an LLM-generated summary; summaries are
-cached on the dialogue and persisted, so the LLM is not re-queried per
-turn. See [doc/DIALOGUE_FLOW.md](doc/DIALOGUE_FLOW.md) for the model and
-[TODO.md](TODO.md) for known follow-ups (context-delivery redesign,
-pyhri groups).
+When a new dialogue spawns for a known interlocutor, the most recent
+prior summary is pre-filled at the top of the new dialogue's
+history (marked with a `__summary__` utterance plus a
+`__session_break__`), so the robot picks up with prior context.
+
+See [doc/DIALOGUE_FLOW.md](doc/DIALOGUE_FLOW.md) for the recording
+fan-out rules, summariser model, and pre-fill semantics.
 
 ## Multi-modal expression markup
 
-The `/skill/say` action and chatbot responses support a markup language
-that synchronizes TTS with robot actions (facial expressions, gestures,
-LED effects, gaze). For example:
+The `/skill/say` action and chatbot responses support a markup
+language that synchronises speech with robot actions (facial
+expressions, gestures, LED effects, gaze). For example:
 
 ```
 <set expression(happy)> <start motion(wave)> Hello! <wait motion timeout=1> <set expression(neutral)>
 ```
 
-This will make the robot say "Hello!" while waving with a happy
-expression, wait for the wave to finish (up to 1 second), then return to
-a neutral expression.
+The robot says "Hello!" while waving with a happy expression, waits
+for the wave to finish (up to 1 second), then returns to neutral.
 
-See [doc/TEXT_MARKUP.md](doc/TEXT_MARKUP.md) for the full specification,
-including verb semantics, available actions, variable substitution, and
-the built-in `<pause(N)>` action.
+See [doc/TEXT_MARKUP.md](doc/TEXT_MARKUP.md) for the full
+specification (verb semantics, available actions, variable
+substitution, the built-in `<pause(N)>` action).
 
-Available actions are defined in `config/00-default_actions.yaml` and can
-be extended by adding YAML files to the `markup_libraries` parameter.
-Individual actions can be disabled via `disabled_markup_actions` (e.g.
-`motion` is disabled by default for safety).
+Actions are defined in `config/00-default_actions.yaml` and can be
+extended via additional YAML files listed in `markup_libraries`.
+Individual actions can be disabled via `disabled_markup_actions`
+(e.g. `motion` is disabled by default for safety).
+
+## Live introspection
+
+The `rqt_dialogues` plugin (sibling package in the same repo)
+subscribes to `~/debug_state` and shows a live two-pane view of
+active and archived dialogues with their full history. Boxes flash
+to highlight recently-updated dialogues. Useful when tuning
+default-chat behaviour or debugging group fan-out.
 
 ## Launch
 
@@ -141,4 +171,9 @@ Individual actions can be disabled via `disabled_markup_actions` (e.g.
 ros2 launch dialogue_manager dialogue_manager.launch.py
 ```
 
+Then drive the lifecycle:
 
+```bash
+ros2 lifecycle set /dialogue_manager configure
+ros2 lifecycle set /dialogue_manager activate
+```
