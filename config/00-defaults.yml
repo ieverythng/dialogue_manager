@@ -19,6 +19,15 @@
     # Maximum wait time for chatbot responses (seconds)
     chatbot_response_timeout: 5.0
 
+    # Planner completion wording mode:
+    # - direct: speak planner factual text directly (default)
+    # - chatbot: ask chatbot_llm to paraphrase completion wording
+    planner_completion_wording_mode: "direct"
+
+    # Legacy override for completion wording through chatbot_llm.
+    # Prefer planner_completion_wording_mode above.
+    use_llm_completion_wording: false
+
     # Maximum execution duration for full multi-modal expression (seconds)
     multi_modal_expression_timeout: 60.0
 

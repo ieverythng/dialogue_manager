@@ -18,7 +18,6 @@ from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from hri_actions_msgs.msg import ClosedCaption, Intent
 from planner_common import parse_json_object
 from planner_common import PlannerDialogueAct
-from planner_common import truncate_text
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.lifecycle import LifecycleNode, State, TransitionCallbackReturn
@@ -116,6 +115,18 @@ class DialogueManagerNode(LifecycleNode):
             'planner_dialogue_act_topic', '/planner/dialogue_act',
             ParameterDescriptor(
                 description='Planner-owned dialogue-act topic for asynchronous execution feedback.'
+            )
+        )
+        self.declare_parameter(
+            'planner_completion_wording_mode', 'direct',
+            ParameterDescriptor(
+                description='How notify_completion wording is produced: direct or chatbot.'
+            )
+        )
+        self.declare_parameter(
+            'use_llm_completion_wording', False,
+            ParameterDescriptor(
+                description='Legacy override: when true, route notify_completion wording through chatbot.'
             )
         )
 
@@ -325,19 +336,10 @@ class DialogueManagerNode(LifecycleNode):
             )
             return
 
-        if dialogue_act.act == 'explain_failure':
-            self.get_logger().warn(
-                '[PLANNER ACT] explain_failure suppressed for TTS goal_id=%s reason=%s text_hint=%s'
-                % (
-                    dialogue_act.goal_id,
-                    truncate_text(dialogue_act.reason or '', 2000),
-                    truncate_text(dialogue_act.text_hint or '', 500),
-                )
-            )
-            return
-
-        if dialogue_act.act == 'notify_completion' and self._ask_chatbot_for_planner_reply(
-            dialogue_act
+        if (
+            dialogue_act.act == 'notify_completion'
+            and self._use_chatbot_completion_wording()
+            and self._ask_chatbot_for_planner_reply(dialogue_act)
         ):
             return
 
@@ -362,6 +364,25 @@ class DialogueManagerNode(LifecycleNode):
             priority=_planner_tts_priority(dialogue_act.priority),
         )
 
+    def _use_chatbot_completion_wording(self) -> bool:
+        """Return whether completion wording should be delegated to chatbot_llm."""
+        use_llm_override = bool(
+            self.get_parameter('use_llm_completion_wording').get_parameter_value().bool_value
+        )
+        if use_llm_override:
+            return True
+
+        mode = str(
+            self.get_parameter('planner_completion_wording_mode').get_parameter_value().string_value
+        ).strip().lower()
+        if mode not in ('direct', 'chatbot'):
+            self.get_logger().warn(
+                '[PLANNER ACT] Invalid planner_completion_wording_mode=%s; falling back to direct'
+                % mode
+            )
+            return False
+        return mode == 'chatbot'
+
     def _ask_chatbot_for_planner_reply(self, dialogue_act: PlannerDialogueAct) -> bool:
         """Route completed planner tasks back through chatbot_llm for wording."""
         if self._chatbot_client is None:
@@ -384,6 +405,16 @@ def _planner_dialogue_text(dialogue_act: PlannerDialogueAct) -> str:
     text_hint = str(dialogue_act.text_hint or '').strip()
     if text_hint:
         return text_hint
+    context = dict(dialogue_act.context or {})
+    if act == 'notify_completion':
+        result_payload = context.get('result_payload', {})
+        if isinstance(result_payload, dict):
+            summary_text = str(result_payload.get('summary_text', '')).strip()
+            if summary_text:
+                return summary_text
+        result_summary = str(context.get('result_summary', '')).strip()
+        if result_summary:
+            return result_summary
 
     fallback_by_act = {
         'progress_update': 'I am working on it now.',
@@ -405,6 +436,9 @@ def _planner_completion_prompt(dialogue_act: PlannerDialogueAct) -> str:
     context = dict(dialogue_act.context or {})
     goal_text = str(context.get('goal_text', '')).strip()
     result_summary = str(context.get('result_summary', '')).strip()
+    result_payload = context.get('result_payload', {})
+    if not result_summary and isinstance(result_payload, dict):
+        result_summary = str(result_payload.get('summary_text', '')).strip()
     text_hint = str(dialogue_act.text_hint or '').strip()
     requested_intents = context.get('requested_intents', [])
     if not isinstance(requested_intents, list):

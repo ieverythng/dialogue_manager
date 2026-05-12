@@ -16,6 +16,7 @@
 
 from dialogue_manager.manager_node import DialogueManagerNode
 from dialogue_manager.manager_node import _planner_completion_prompt
+from dialogue_manager.manager_node import _planner_dialogue_text
 from planner_common import PlannerDialogueAct
 import pytest
 import rclpy
@@ -64,6 +65,23 @@ def test_planner_completion_prompt_keeps_chatbot_as_wording_owner():
     assert 'head motion completed' in prompt
     assert 'planner internals' in prompt
     assert 'no confirmed result was available' in prompt
+
+
+def test_planner_dialogue_text_prefers_structured_scan_summary_text() -> None:
+    act = PlannerDialogueAct.from_payload(
+        {
+            'act': 'notify_completion',
+            'goal_id': 'goal_scan_1',
+            'context': {
+                'result_summary': 'fallback summary text',
+                'result_payload': {
+                    'skill': 'scan',
+                    'summary_text': 'I found one person (id: anonymous_person_1).',
+                },
+            },
+        }
+    )
+    assert _planner_dialogue_text(act) == 'I found one person (id: anonymous_person_1).'
 
     def test_parameters_declared(self, rclpy_context):
         """All parameters are declared on creation."""
