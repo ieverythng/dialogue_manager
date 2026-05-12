@@ -31,7 +31,6 @@ from .dialogue import (
     Dialogue,
     DialogueManager,
     DialogueState,
-    Interlocutor,
     ROBOT_SPEAKER_ID,
 )
 from .markup.executor import ExpressionExecutor
@@ -123,49 +122,56 @@ class ChatbotClient:
             return False
         return self._dialogue_client.wait_for_server(timeout_sec=timeout_sec)
 
-    def start_default_chat(self, role_name: str, role_config: str = '{}') -> None:
-        """Start the default chat dialogue."""
-        log_config = f'"{role_config[:50]}..."' if len(role_config) > 50 else f'"{role_config}"'
-        self._node.get_logger().info(
-            f'[DEFAULT CHAT] Starting with role="{role_name}", configuration={log_config}'
+    def attach_to_dialogue(
+        self, dialogue: Dialogue, role: DialogueRole
+    ) -> bool:
+        """Asynchronously start a chatbot dialogue and attach it to `dialogue`.
+
+        Sends a start_dialogue goal to the chatbot in the background; on
+        acceptance, sets `dialogue.chatbot_goal_id` so subsequent
+        SpeechHandler input is forwarded to the chatbot. Returns True if
+        the goal was dispatched (server reachable), False otherwise.
+
+        Speech that arrives *between* this call returning and the goal
+        being accepted is still recorded into the dialogue history but
+        not forwarded to the chatbot — a small first-utterance race that
+        callers should be aware of.
+        """
+        if not self._dialogue_client or not self._dialogue_client.wait_for_server(
+            timeout_sec=1.0
+        ):
+            self._node.get_logger().warn(
+                '[CHATBOT] attach_to_dialogue: server not available'
+            )
+            return False
+        goal = DialogueAction.Goal()
+        goal.role = role
+        future = self._dialogue_client.send_goal_async(goal)
+        future.add_done_callback(
+            lambda f, d=dialogue: self._on_attached_goal_response(f, d)
         )
+        self._node.get_logger().info(
+            f'[CHATBOT] Attaching chatbot dialogue to {dialogue.dialogue_id} '
+            f'(role="{role.name}", interlocutor={dialogue.interlocutor.key})'
+        )
+        return True
 
-        role = DialogueRole()
-        role.name = role_name
-        role.configuration = role_config if role_config else '{}'
-
-        if self._dialogue_client and self._dialogue_client.wait_for_server(timeout_sec=1.0):
-            self._node.get_logger().debug('[DEFAULT CHAT] Server available, sending goal')
-            goal = DialogueAction.Goal()
-            goal.role = role
-            future = self._dialogue_client.send_goal_async(goal)
-            future.add_done_callback(self._on_default_dialogue_started)
-        else:
-            self._node.get_logger().warn('[DEFAULT CHAT] Chatbot not available')
-
-    def _on_default_dialogue_started(self, future) -> None:
-        """Handle default dialogue start result."""
+    def _on_attached_goal_response(self, future, dialogue: Dialogue) -> None:
+        """Handle the chatbot goal acceptance for an attached dialogue."""
         goal_handle = future.result()
-        if goal_handle and goal_handle.accepted:
-            # Extract the chatbot's goal UUID from the goal handle
-            chatbot_goal_id = UUID(bytes=bytes(goal_handle.goal_id.uuid))
-            # Default chat starts unbound; the interlocutor is filled in when
-            # someone first speaks to the robot.
-            dialogue = Dialogue(
-                role=DialogueRole(name=DialogueRole.DEFAULT_ROLE),
-                interlocutor=Interlocutor(),
-                priority=0,  # Default chat has lowest priority
-                state=DialogueState.ACTIVE,
-                chatbot_goal_id=chatbot_goal_id
+        if not goal_handle or not goal_handle.accepted:
+            self._node.get_logger().warn(
+                f'[CHATBOT] Chatbot rejected dialogue '
+                f'{dialogue.dialogue_id}; running passive'
             )
-            self._dialogue_manager.add_dialogue(dialogue)
-            self._dialogue_manager.set_default_dialogue_id(dialogue.dialogue_id)
-            self._node.get_logger().info(
-                f'[DEFAULT CHAT] Started successfully, '
-                f'internal_id={dialogue.dialogue_id}, chatbot_goal_id={chatbot_goal_id}'
-            )
-        else:
-            self._node.get_logger().warn('[DEFAULT CHAT] Failed - chatbot rejected goal')
+            return
+        chatbot_goal_id = UUID(bytes=bytes(goal_handle.goal_id.uuid))
+        dialogue.chatbot_goal_id = chatbot_goal_id
+        self._dialogue_manager.notify_change(dialogue.dialogue_id)
+        self._node.get_logger().info(
+            f'[CHATBOT] Attached chatbot_goal_id={chatbot_goal_id} to '
+            f'dialogue {dialogue.dialogue_id}'
+        )
 
     def send_input(
         self,

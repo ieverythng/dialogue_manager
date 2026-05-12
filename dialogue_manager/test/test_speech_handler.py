@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 from uuid import uuid4
 
 from chatbot_msgs.msg import DialogueRole
+from dialogue_manager.conversations_history import ConversationsHistoryStore
 from dialogue_manager.dialogue import (
     Dialogue,
     DialogueManager,
@@ -43,6 +44,7 @@ class TestSpeechHandlerInit:
             node=mock_node,
             dialogue_manager=mock_dialogue_manager,
             chatbot_client=mock_chatbot_client,
+            conversations_store=ConversationsHistoryStore(),
             closed_captions_pub=mock_captions_pub,
             intents_pub=mock_intents_pub
         )
@@ -59,6 +61,7 @@ class TestSpeechHandlerInit:
             node=MagicMock(),
             dialogue_manager=MagicMock(),
             chatbot_client=MagicMock(),
+            conversations_store=ConversationsHistoryStore(),
             closed_captions_pub=MagicMock(),
             intents_pub=MagicMock()
         )
@@ -72,6 +75,7 @@ class TestSpeechHandlerInit:
             node=MagicMock(),
             dialogue_manager=MagicMock(),
             chatbot_client=MagicMock(),
+            conversations_store=ConversationsHistoryStore(),
             closed_captions_pub=MagicMock(),
             intents_pub=MagicMock()
         )
@@ -88,6 +92,7 @@ class TestSpeechHandlerChatbotEnabled:
             node=MagicMock(),
             dialogue_manager=MagicMock(),
             chatbot_client=MagicMock(),
+            conversations_store=ConversationsHistoryStore(),
             closed_captions_pub=MagicMock(),
             intents_pub=MagicMock()
         )
@@ -102,6 +107,7 @@ class TestSpeechHandlerChatbotEnabled:
             node=MagicMock(),
             dialogue_manager=MagicMock(),
             chatbot_client=MagicMock(),
+            conversations_store=ConversationsHistoryStore(),
             closed_captions_pub=MagicMock(),
             intents_pub=MagicMock()
         )
@@ -124,6 +130,7 @@ class TestSpeechHandlerVoiceTracking:
             node=self.mock_node,
             dialogue_manager=self.mock_dialogue_manager,
             chatbot_client=self.mock_chatbot_client,
+            conversations_store=ConversationsHistoryStore(),
             closed_captions_pub=MagicMock(),
             intents_pub=MagicMock()
         )
@@ -192,6 +199,7 @@ class TestSpeechHandlerOnSpeech:
             node=self.mock_node,
             dialogue_manager=self.mock_dialogue_manager,
             chatbot_client=self.mock_chatbot_client,
+            conversations_store=ConversationsHistoryStore(),
             closed_captions_pub=self.mock_captions_pub,
             intents_pub=self.mock_intents_pub
         )
@@ -265,53 +273,103 @@ class TestSpeechHandlerOnSpeech:
             dialogue.dialogue_id, 'voice1', 'Hello'
         )
 
-    def test_on_speech_uses_default_dialogue(self):
-        """Speech routes to default dialogue when no person dialogue."""
-        default_id = uuid4()
-        default_dialogue = Dialogue(
-            role=DialogueRole(name='default'),
-            interlocutor=Interlocutor(),
-            state=DialogueState.ACTIVE,
-            dialogue_id=default_id,
-            chatbot_goal_id=uuid4(),
-        )
-        self.mock_dialogue_manager.add_dialogue(default_dialogue)
-        self.mock_dialogue_manager.set_default_dialogue_id(default_id)
-
-        msg = LiveSpeech()
-        msg.final = 'Hello'
-
-        self.handler._on_speech('voice1', msg)
-
-        self.mock_chatbot_client.send_input.assert_called_once_with(
-            default_id, 'voice1', 'Hello'
-        )
-
-    def test_on_speech_uses_passive_default_dialogue(self):
-        """Speech records into a chatbot-less default dialogue without forwarding."""
-        default_id = uuid4()
-        default_dialogue = Dialogue(
-            role=DialogueRole(name='default'),
-            interlocutor=Interlocutor(),
-            state=DialogueState.ACTIVE,
-            dialogue_id=default_id,
-            # No chatbot_goal_id → passive default
-        )
-        self.mock_dialogue_manager.add_dialogue(default_dialogue)
-        self.mock_dialogue_manager.set_default_dialogue_id(default_id)
+    def test_on_speech_spawns_per_person_default_dialogue(self):
+        """First speech from a new speaker auto-spawns a per-person Dialogue."""
+        self.handler.set_default_chat('__default__')
 
         msg = LiveSpeech()
         msg.final = 'hiya'
 
-        self.handler._on_speech('voice1', msg)
+        self.handler._on_speech('alice', msg)
 
-        # No chatbot forwarding.
-        self.mock_chatbot_client.send_input.assert_not_called()
-        # But the utterance lands in the default dialogue.
-        assert len(default_dialogue.history) == 1
-        assert default_dialogue.history[0].text == 'hiya'
-        assert default_dialogue.history[0].speaker_id == 'voice1'
-        # And a RAW_USER_INPUT intent is published.
+        # A new per-person dialogue was created.
+        spawned = self.mock_dialogue_manager.get_dialogue_for_interlocutor(
+            Interlocutor(person_id='alice')
+        )
+        assert spawned is not None
+        assert spawned.role.name == '__default__'
+        assert spawned.interlocutor.person_id == 'alice'
+        # The utterance lives in that dialogue's history.
+        assert len(spawned.history) == 1
+        assert spawned.history[0].text == 'hiya'
+        # And the chatbot was asked to attach (mock records the call).
+        self.mock_chatbot_client.attach_to_dialogue.assert_called_once()
+
+    def test_on_speech_spawns_one_dialogue_per_person(self):
+        """Different speakers each get their own __default__ dialogue."""
+        self.handler.set_default_chat('__default__')
+
+        msg_a = LiveSpeech()
+        msg_a.final = 'hi from A'
+        msg_b = LiveSpeech()
+        msg_b.final = 'hi from B'
+
+        self.handler._on_speech('alice', msg_a)
+        self.handler._on_speech('bob', msg_b)
+
+        d_a = self.mock_dialogue_manager.get_dialogue_for_interlocutor(
+            Interlocutor(person_id='alice')
+        )
+        d_b = self.mock_dialogue_manager.get_dialogue_for_interlocutor(
+            Interlocutor(person_id='bob')
+        )
+        assert d_a is not None and d_b is not None
+        assert d_a.dialogue_id != d_b.dialogue_id
+        assert [u.text for u in d_a.history] == ['hi from A']
+        assert [u.text for u in d_b.history] == ['hi from B']
+
+    def test_on_speech_reuses_existing_per_person_dialogue(self):
+        """Subsequent utterances from the same speaker land in the same Dialogue."""
+        self.handler.set_default_chat('__default__')
+
+        msg1 = LiveSpeech()
+        msg1.final = 'hi'
+        msg2 = LiveSpeech()
+        msg2.final = 'how are you'
+
+        self.handler._on_speech('alice', msg1)
+        self.handler._on_speech('alice', msg2)
+
+        d = self.mock_dialogue_manager.get_dialogue_for_interlocutor(
+            Interlocutor(person_id='alice')
+        )
+        assert d is not None
+        assert [u.text for u in d.history] == ['hi', 'how are you']
+        # Only one chatbot attach call (for the spawn).
+        assert self.mock_chatbot_client.attach_to_dialogue.call_count == 1
+
+    def test_on_speech_chatbot_less_does_not_attach(self):
+        """No chatbot present → spawn dialogue but never call attach_to_dialogue."""
+        self.handler._chatbot_client = None
+        self.handler.set_default_chat('__default__')
+
+        msg = LiveSpeech()
+        msg.final = 'hello'
+
+        self.handler._on_speech('alice', msg)
+
+        d = self.mock_dialogue_manager.get_dialogue_for_interlocutor(
+            Interlocutor(person_id='alice')
+        )
+        assert d is not None
+        assert d.chatbot_goal_id is None
+        assert len(d.history) == 1
+        # RAW_USER_INPUT still published.
+        self.mock_intents_pub.publish.assert_called_once()
+
+    def test_on_speech_default_chat_disabled_does_not_spawn(self):
+        """When default chat is off, unmatched speech is RAW_USER_INPUT only."""
+        # Don't call set_default_chat → no auto-spawn.
+
+        msg = LiveSpeech()
+        msg.final = 'hello'
+
+        self.handler._on_speech('alice', msg)
+
+        d = self.mock_dialogue_manager.get_dialogue_for_interlocutor(
+            Interlocutor(person_id='alice')
+        )
+        assert d is None
         self.mock_intents_pub.publish.assert_called_once()
 
     def test_on_speech_no_dialogue_publishes_intent(self):
@@ -335,6 +393,7 @@ class TestSpeechHandlerIntentPublishing:
             node=MagicMock(),
             dialogue_manager=DialogueManager(),
             chatbot_client=MagicMock(),
+            conversations_store=ConversationsHistoryStore(),
             closed_captions_pub=MagicMock(),
             intents_pub=self.mock_intents_pub
         )

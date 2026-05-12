@@ -26,6 +26,8 @@ from .dialogue import (
     Dialogue,
     DialogueState,
     Interlocutor,
+    SESSION_BREAK_SPEAKER_ID,
+    SUMMARY_SPEAKER_ID,
     Utterance,
 )
 
@@ -119,6 +121,39 @@ class ConversationsHistoryStore:
     def history_for(self, interlocutor: Interlocutor) -> list[Dialogue]:
         """Return a copy of the past dialogues for an interlocutor."""
         return list(self._by_interlocutor.get(interlocutor.key, []))
+
+    def preload_into(self, dialogue: Dialogue, now: float) -> bool:
+        """Pre-fill `dialogue.history` with the most recent prior summary.
+
+        For a known interlocutor with at least one archived prior dialogue
+        carrying a non-empty summary, prepend a SUMMARY utterance followed by
+        a SESSION_BREAK marker and advance `session_start_index` so these
+        pre-fill entries are excluded from archival.
+
+        Returns True if a summary was pre-filled, False otherwise.
+        """
+        if not dialogue.interlocutor.is_bound:
+            return False
+        prior = self.history_for(dialogue.interlocutor)
+        if not prior:
+            return False
+        latest = max(prior, key=lambda d: d.ended_at or d.started_at or 0.0)
+        if not latest.summary:
+            return False
+
+        timestamp = latest.ended_at or latest.started_at or now
+        dialogue.history.append(Utterance(
+            timestamp=timestamp,
+            speaker_id=SUMMARY_SPEAKER_ID,
+            text=latest.summary,
+        ))
+        dialogue.history.append(Utterance(
+            timestamp=now,
+            speaker_id=SESSION_BREAK_SPEAKER_ID,
+            text='',
+        ))
+        dialogue.session_start_index = len(dialogue.history)
+        return True
 
     # =========================================================================
     # Context construction

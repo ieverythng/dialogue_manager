@@ -32,8 +32,7 @@ JSON schema (see also `doc/DEBUG_STATE.md`):
       "chatbot": {
         "configured": <bool>,
         "available": <bool>,
-        "waiting_for_response": <bool>,
-        "default_dialogue_id": "<uuid>|null"
+        "waiting_for_response": <bool>
       },
       "current_expression_priority": <int>,
       "dialogues": [<dialogue>, ...],
@@ -99,9 +98,9 @@ class DebugStatePublisher:
             Source of truth for archived dialogues per interlocutor.
         chatbot_status
             Callable returning a dict with keys
-            `configured`/`available`/`waiting_for_response`/
-            `default_dialogue_id` describing the chatbot's current state.
-            Returns a safely-empty dict by default (no chatbot).
+            `configured`/`available`/`waiting_for_response`
+            describing the chatbot's current state. Returns a safely-empty
+            dict by default (no chatbot).
         active_status
             Callable returning True when the lifecycle node is in its
             active state. Defaults to `lambda: True`.
@@ -114,7 +113,6 @@ class DebugStatePublisher:
             'configured': False,
             'available': False,
             'waiting_for_response': False,
-            'default_dialogue_id': None,
         })
         self._active_status = active_status or (lambda: True)
 

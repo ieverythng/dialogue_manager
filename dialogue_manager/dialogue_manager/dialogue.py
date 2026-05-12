@@ -178,11 +178,6 @@ class DialogueManager:
         """Initialize the dialogue manager."""
         self._dialogues: dict[UUID, Dialogue] = {}
         self._current_expression_priority: int = -1
-        # The catch-all 'default' dialogue: anything spoken to the robot when
-        # no other dialogue is active for that interlocutor falls into here.
-        # May be backed by the chatbot or run chatbot-less (in which case the
-        # dialogue is purely a history container driven by the SpeechHandler).
-        self._default_dialogue_id: UUID | None = None
         # Optional observer hook invoked whenever the manager's state changes.
         # `dialogue_id` is the UUID string of the affected dialogue, or None
         # for changes that don't pertain to one specific dialogue
@@ -208,16 +203,6 @@ class DialogueManager:
     def can_accept_priority(self, priority: int) -> bool:
         """Check if a new goal with given priority can be accepted."""
         return priority > self.current_max_priority
-
-    @property
-    def default_dialogue_id(self) -> UUID | None:
-        """Return the current default-dialogue UUID, if any."""
-        return self._default_dialogue_id
-
-    def set_default_dialogue_id(self, dialogue_id: UUID | None) -> None:
-        """Mark a dialogue as the default (catch-all) for unbound speech."""
-        self._default_dialogue_id = dialogue_id
-        self.notify_change(dialogue_id)
 
     def set_change_callback(
         self, callback: Callable[[str | None], None] | None
@@ -263,8 +248,6 @@ class DialogueManager:
         removed = self._dialogues.pop(dialogue_id, None)
         if removed is not None:
             removed._change_callback = None
-            if self._default_dialogue_id == dialogue_id:
-                self._default_dialogue_id = None
             self.notify_change(dialogue_id)
         return removed
 
@@ -299,5 +282,4 @@ class DialogueManager:
         for d in self._dialogues.values():
             d._change_callback = None
         self._dialogues.clear()
-        self._default_dialogue_id = None
         self.notify_change()

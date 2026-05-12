@@ -37,9 +37,6 @@ from .dialogue import (
     Interlocutor,
     ROBOT_SPEAKER_ID,
     SAY_ROLE_NAME,
-    SESSION_BREAK_SPEAKER_ID,
-    SUMMARY_SPEAKER_ID,
-    Utterance,
 )
 from .markup.executor import ExpressionExecutor
 from .say_client import SayClient
@@ -179,43 +176,12 @@ class SkillServers:
         threading.Thread(target=runner, daemon=True).start()
 
     def _preload_summary(self, dialogue: Dialogue) -> None:
-        """Pre-fill `dialogue.history` with the most recent prior summary.
-
-        For a known interlocutor with at least one archived prior dialogue
-        carrying a non-empty summary, prepend a SUMMARY utterance followed by
-        a SESSION_BREAK marker, then advance `session_start_index` so these
-        pre-fill entries are excluded from archival.
-        """
-        if not dialogue.interlocutor.is_bound:
-            return
-        prior = self._conversations_store.history_for(dialogue.interlocutor)
-        if not prior:
-            return
-        # Most recent prior dialogue by ended_at (fallback to started_at, then
-        # leave order if neither is set).
-        latest = max(
-            prior,
-            key=lambda d: d.ended_at or d.started_at or 0.0,
-        )
-        if not latest.summary:
-            return  # No usable summary; skip pre-fill silently.
-
-        timestamp = latest.ended_at or latest.started_at or self._now()
-        dialogue.history.append(Utterance(
-            timestamp=timestamp,
-            speaker_id=SUMMARY_SPEAKER_ID,
-            text=latest.summary,
-        ))
-        dialogue.history.append(Utterance(
-            timestamp=self._now(),
-            speaker_id=SESSION_BREAK_SPEAKER_ID,
-            text='',
-        ))
-        dialogue.session_start_index = len(dialogue.history)
-        self._node.get_logger().info(
-            f'[SKILLS] Pre-filled dialogue {dialogue.dialogue_id} with prior '
-            f'summary for {dialogue.interlocutor.key}'
-        )
+        """Pre-fill `dialogue.history` with prior summary, if any."""
+        if self._conversations_store.preload_into(dialogue, self._now()):
+            self._node.get_logger().info(
+                f'[SKILLS] Pre-filled dialogue {dialogue.dialogue_id} with '
+                f'prior summary for {dialogue.interlocutor.key}'
+            )
 
     def _inject_initial_context(self, dialogue: Dialogue) -> None:
         """Build and push the conversation context to the chatbot at start."""
