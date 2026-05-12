@@ -421,9 +421,36 @@ class DialogueManagerNode(LifecycleNode):
         return super().on_deactivate(state)
 
     def _persist_conversations(self) -> None:
-        """Persist the in-memory conversation store to disk."""
+        """Snapshot active bound dialogues into the store, then save to disk.
+
+        Without the snapshot step, long-lived dialogues never reach
+        disk between activate and deactivate (the store only contains
+        explicitly-finalised dialogues). Archive is idempotent — the
+        snapshot just registers active dialogues as in-progress entries
+        under their interlocutor's history; subsequent saves pick up
+        new utterances directly because bucket entries are references
+        to the live Dialogue objects.
+        """
         if self._conversations_store is None:
             return
+        for dialogue in self._dialogue_manager.active_dialogues.values():
+            if not dialogue.interlocutor.is_bound:
+                continue
+            if not dialogue.session_utterances:
+                continue
+            members = (
+                self._resolve_group_members(dialogue.interlocutor.group_id)
+                if dialogue.interlocutor.is_group else None
+            )
+            try:
+                self._conversations_store.archive(
+                    dialogue, group_members=members
+                )
+            except Exception as exc:
+                self.get_logger().warn(
+                    f'[PERSIST] Snapshot of dialogue '
+                    f'{dialogue.dialogue_id} failed: {exc}'
+                )
         try:
             self._conversations_store.save()
         except Exception as exc:

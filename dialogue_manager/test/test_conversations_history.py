@@ -286,6 +286,52 @@ class TestSessionUtterancesPersistence:
 
         assert store.history_for(Interlocutor(person_id='alice')) == []
 
+    def test_archive_is_idempotent(self):
+        """Archiving the same Dialogue twice does not duplicate it."""
+        store = ConversationsHistoryStore()
+        d = Dialogue(
+            role=DialogueRole(name='test'),
+            interlocutor=Interlocutor(person_id='alice'),
+            state=DialogueState.ACTIVE,
+        )
+        d.add_utterance('alice', 'hi', 1.0)
+
+        store.archive(d)
+        store.archive(d)  # second call — must be a no-op
+
+        history = store.history_for(Interlocutor(person_id='alice'))
+        assert len(history) == 1
+        assert history[0] is d
+
+    def test_archived_active_dialogue_continues_to_grow_on_disk(self, tmp_path):
+        """An archived in-progress dialogue picks up new utterances on resave.
+
+        Bucket entries are references to the live Dialogue object, so
+        appending an utterance after archive() makes the next save()
+        write the updated history without re-archiving.
+        """
+        import json
+        store = ConversationsHistoryStore(storage_dir=tmp_path)
+        d = Dialogue(
+            role=DialogueRole(name='test'),
+            interlocutor=Interlocutor(person_id='alice'),
+            state=DialogueState.ACTIVE,
+        )
+        d.add_utterance('alice', 'hi', 1.0)
+        store.archive(d)
+        store.save()
+
+        # Periodic snapshot pattern: more utterances arrive, archive
+        # called again — must remain a single entry, and the file
+        # reflects the new utterance.
+        d.add_utterance('alice', 'how are you', 2.0)
+        store.archive(d)
+        store.save()
+
+        payload = json.loads((tmp_path / 'person' / 'alice.json').read_text())
+        assert len(payload) == 1
+        assert len(payload[0]['history']) == 2
+
     def test_save_serializes_session_utterances_only(self, tmp_path):
         """Persisted JSON contains only the current session's utterances."""
         store = ConversationsHistoryStore(storage_dir=tmp_path)

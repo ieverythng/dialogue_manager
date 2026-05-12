@@ -116,6 +116,14 @@ class ConversationsHistoryStore:
 
     def _append(self, interlocutor: Interlocutor, dialogue: Dialogue) -> None:
         bucket = self._by_interlocutor.setdefault(interlocutor.key, [])
+        # Idempotent: if this Dialogue is already tracked under the key
+        # (typical when periodic snapshotting re-archives an
+        # in-progress dialogue), don't duplicate it. The latest history
+        # is on the same Dialogue object — bucket entries are
+        # references, not copies — so subsequent save() reflects new
+        # utterances without us having to re-insert.
+        if any(d.dialogue_id == dialogue.dialogue_id for d in bucket):
+            return
         bucket.append(dialogue)
 
     def history_for(self, interlocutor: Interlocutor) -> list[Dialogue]:
