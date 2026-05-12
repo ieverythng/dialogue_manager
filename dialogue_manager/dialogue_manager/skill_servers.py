@@ -89,6 +89,7 @@ class SkillServers:
         closed_captions_pub: Publisher | None = None,
         callback_group: ReentrantCallbackGroup | None = None,
         summarizer: Summarizer | None = None,
+        group_handler=None,  # GroupHandler | None — avoid circular import
     ):
         """Initialize skill servers."""
         self._node = node
@@ -101,6 +102,7 @@ class SkillServers:
         self._closed_captions_pub = closed_captions_pub
         self._callback_group = callback_group
         self._summarizer: Summarizer = summarizer or default_summarizer
+        self._group_handler = group_handler
 
         self._chat_server: ActionServer | None = None
         self._ask_server: ActionServer | None = None
@@ -684,17 +686,34 @@ class SkillServers:
     def _record_say_utterance(
         self, interlocutor: Interlocutor, raw_input: str
     ) -> None:
-        """Record a Say utterance against an interlocutor's history."""
+        """Record a Say utterance against an addressed interlocutor.
+
+        When the addressed entity (person or group) has at least one
+        active dialogue, the utterance lands in that dialogue plus every
+        related active dialogue (group ⇒ members, person ⇒ groups they
+        belong to + co-members). When nothing is active, falls back to a
+        synthetic __say__ dialogue archived directly to disk.
+        """
         plain_text = self._strip_markup(raw_input)
         if not plain_text:
             return
 
         timestamp = self._now()
-        active = self._dialogue_manager.get_dialogue_for_interlocutor(interlocutor)
-        if active is not None:
-            active.add_utterance(ROBOT_SPEAKER_ID, plain_text, timestamp)
+        recipients = self._active_recipients_for(interlocutor)
+        if recipients:
+            for dialogue in recipients:
+                dialogue.add_utterance(
+                    ROBOT_SPEAKER_ID, plain_text, timestamp
+                )
+            self._node.get_logger().info(
+                f'[SAY] Recorded into {len(recipients)} active dialogue(s) '
+                f'for {interlocutor.key}'
+            )
             return
 
+        # Nothing currently active for this interlocutor — fall back to
+        # a synthetic __say__ dialogue, archived directly so the
+        # utterance still leaves a trace on disk.
         synthetic = Dialogue(
             role=DialogueRole(name=SAY_ROLE_NAME),
             interlocutor=interlocutor,
@@ -707,6 +726,51 @@ class SkillServers:
             if interlocutor.is_group else None
         )
         self._conversations_store.archive(synthetic, group_members=members)
+
+    def _active_recipients_for(
+        self, interlocutor: Interlocutor
+    ) -> list[Dialogue]:
+        """Return every active dialogue that should receive an utterance.
+
+        For a group: the group's dialogue + every member's per-person
+        dialogue. For a person: the person's dialogue + every group
+        they're in + every co-member's dialogue. Only returns dialogues
+        that are already active — no auto-spawning here.
+        """
+        result: list[Dialogue] = []
+        primary = self._dialogue_manager.get_dialogue_for_interlocutor(
+            interlocutor
+        )
+        if primary is not None:
+            result.append(primary)
+
+        if interlocutor.is_group:
+            for member_id in self._resolve_group_members(interlocutor.group_id):
+                d = self._dialogue_manager.get_dialogue_for_interlocutor(
+                    Interlocutor(person_id=member_id)
+                )
+                if d is not None and d not in result:
+                    result.append(d)
+            return result
+
+        if interlocutor.person_id and self._group_handler is not None:
+            for group_id in self._group_handler.groups_containing(
+                interlocutor.person_id
+            ):
+                d = self._dialogue_manager.get_dialogue_for_interlocutor(
+                    Interlocutor(group_id=group_id)
+                )
+                if d is not None and d not in result:
+                    result.append(d)
+            for co_member_id in self._group_handler.co_members_of(
+                interlocutor.person_id
+            ):
+                d = self._dialogue_manager.get_dialogue_for_interlocutor(
+                    Interlocutor(person_id=co_member_id)
+                )
+                if d is not None and d not in result:
+                    result.append(d)
+        return result
 
     def _broadcast_say_utterance(self, raw_input: str) -> None:
         """Record a Say utterance against every active bound dialogue.

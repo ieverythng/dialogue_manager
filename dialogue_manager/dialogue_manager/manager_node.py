@@ -28,7 +28,8 @@ from std_msgs.msg import Bool, String
 from .chatbot_client import ChatbotClient
 from .conversations_history import ConversationsHistoryStore
 from .debug_publisher import DebugStatePublisher
-from .dialogue import DialogueManager, DialogueState
+from .dialogue import DialogueManager, DialogueState, Interlocutor
+from .group_handler import GroupHandler
 from .markup import ActionLibrary, ExpressionExecutor
 from .say_client import SayClient
 from .skill_servers import SkillServers
@@ -69,6 +70,7 @@ class DialogueManagerNode(LifecycleNode):
         self._action_library: ActionLibrary | None = None
         self._expression_executor: ExpressionExecutor | None = None
         self._debug_publisher: DebugStatePublisher | None = None
+        self._group_handler: GroupHandler | None = None
 
         # Publishers (created in on_configure)
         self._closed_captions_pub = None
@@ -253,6 +255,14 @@ class DialogueManagerNode(LifecycleNode):
         else:
             self.get_logger().info('[CONFIGURE] No chatbot configured')
 
+        # Create group handler (tracks ROS4HRI groups, drives group-aware
+        # dialogue recording).
+        self._group_handler = GroupHandler(
+            node=self,
+            on_group_dispersed=self._on_group_dispersed,
+        )
+        self.get_logger().debug('[CONFIGURE] Group handler created')
+
         # Create speech handler
         self._speech_handler = SpeechHandler(
             node=self,
@@ -260,7 +270,8 @@ class DialogueManagerNode(LifecycleNode):
             chatbot_client=self._chatbot_client,
             conversations_store=self._conversations_store,
             closed_captions_pub=self._closed_captions_pub,
-            intents_pub=self._intents_pub
+            intents_pub=self._intents_pub,
+            group_handler=self._group_handler,
         )
         self._speech_handler.set_chatbot_enabled(chatbot != '')
         self.get_logger().debug('[CONFIGURE] Speech handler created')
@@ -276,6 +287,7 @@ class DialogueManagerNode(LifecycleNode):
             expression_executor=self._expression_executor,
             closed_captions_pub=self._closed_captions_pub,
             callback_group=self._callback_group,
+            group_handler=self._group_handler,
         )
         self._skill_servers.create_servers()
         self.get_logger().debug('[CONFIGURE] Skill servers created')
@@ -324,8 +336,10 @@ class DialogueManagerNode(LifecycleNode):
         # Enable skill servers
         self._skill_servers.set_active(True)
 
-        # Subscribe to voices
+        # Subscribe to voices and groups
         self._speech_handler.subscribe_to_voices()
+        if self._group_handler is not None:
+            self._group_handler.subscribe()
 
         # Start periodic conversation-history persistence.
         if self._conversations_store is not None and self._persist_timer is None:
@@ -370,8 +384,10 @@ class DialogueManagerNode(LifecycleNode):
         # Disable skill servers
         self._skill_servers.set_active(False)
 
-        # Unsubscribe from voices
+        # Unsubscribe from voices and groups
         self._speech_handler.unsubscribe_all()
+        if self._group_handler is not None:
+            self._group_handler.unsubscribe()
 
         if self._debug_publisher is not None:
             self._debug_publisher.notify()  # active state changed
@@ -457,14 +473,26 @@ class DialogueManagerNode(LifecycleNode):
     # =========================================================================
 
     def _resolve_group_members(self, group_id: str) -> list[str]:
-        """
-        Resolve a ROS4HRI group ID to its member person IDs.
+        """Resolve a ROS4HRI group ID to its current member person IDs."""
+        if self._group_handler is None:
+            return []
+        return self._group_handler.members_of(group_id)
 
-        TODO: pyhri does not yet expose person groups (see TODO.md). Returns
-        an empty list for now, which means group dialogues are archived only
-        under the group key and not fanned out to individual members.
-        """
-        return []
+    def _on_group_dispersed(self, group_id: str) -> None:
+        """Finalize and archive a dispersed group's dialogue, if any."""
+        if self._skill_servers is None:
+            return
+        dialogue = self._dialogue_manager.get_dialogue_for_interlocutor(
+            Interlocutor(group_id=group_id)
+        )
+        if dialogue is None:
+            return
+        try:
+            self._skill_servers._finalize_and_archive(dialogue)
+        except Exception as exc:
+            self.get_logger().warn(
+                f'[GROUPS] Failed to finalize group {group_id} dialogue: {exc}'
+            )
 
     # =========================================================================
     # Diagnostics

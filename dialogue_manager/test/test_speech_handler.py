@@ -382,6 +382,97 @@ class TestSpeechHandlerOnSpeech:
         self.mock_intents_pub.publish.assert_called_once()
 
 
+class TestSpeechHandlerGroupRouting:
+    """Speech from a group member records into speaker + co-members + group."""
+
+    def setup_method(self):
+        """Set up test fixtures with a fake GroupHandler."""
+        self.mock_node = MagicMock()
+        self.mock_dialogue_manager = DialogueManager()
+        self.mock_chatbot_client = MagicMock()
+        self.mock_chatbot_client.waiting_for_response = False
+        self.mock_captions_pub = MagicMock()
+        self.mock_intents_pub = MagicMock()
+
+        # Fake group handler: alice and bob both in group_a.
+        self.group_handler = MagicMock()
+        self.group_handler.groups_containing.side_effect = (
+            lambda pid: ['group_a'] if pid in ('alice', 'bob') else []
+        )
+        self.group_handler.co_members_of.side_effect = (
+            lambda pid: {'bob'} if pid == 'alice'
+            else {'alice'} if pid == 'bob' else set()
+        )
+
+        self.handler = SpeechHandler(
+            node=self.mock_node,
+            dialogue_manager=self.mock_dialogue_manager,
+            chatbot_client=self.mock_chatbot_client,
+            conversations_store=ConversationsHistoryStore(),
+            closed_captions_pub=self.mock_captions_pub,
+            intents_pub=self.mock_intents_pub,
+            group_handler=self.group_handler,
+        )
+        self.handler.set_default_chat('__default__')
+
+    def test_speech_lands_in_speaker_group_and_co_member(self):
+        """Alice's utterance lands in Alice + group_a + Bob dialogues."""
+        msg = LiveSpeech()
+        msg.final = 'hi everyone'
+
+        self.handler._on_speech('alice', msg)
+
+        alice_d = self.mock_dialogue_manager.get_dialogue_for_interlocutor(
+            Interlocutor(person_id='alice')
+        )
+        bob_d = self.mock_dialogue_manager.get_dialogue_for_interlocutor(
+            Interlocutor(person_id='bob')
+        )
+        group_d = self.mock_dialogue_manager.get_dialogue_for_interlocutor(
+            Interlocutor(group_id='group_a')
+        )
+
+        for d in (alice_d, bob_d, group_d):
+            assert d is not None
+            assert len(d.history) == 1
+            assert d.history[0].text == 'hi everyone'
+            assert d.history[0].speaker_id == 'alice'
+
+    def test_group_dialogue_is_not_attached_to_chatbot(self):
+        """Group dialogues are observational; no chatbot attach."""
+        msg = LiveSpeech()
+        msg.final = 'hi'
+
+        self.handler._on_speech('alice', msg)
+
+        # attach_to_dialogue called for alice and bob, NOT for group_a.
+        attached = [
+            call.args[0].interlocutor
+            for call in self.mock_chatbot_client.attach_to_dialogue.call_args_list
+        ]
+        assert all(i.person_id for i in attached)
+        assert not any(i.group_id for i in attached)
+
+    def test_speaker_outside_any_group_only_spawns_own_dialogue(self):
+        """A speaker with no groups only records into their own dialogue."""
+        # Charlie is not in any group.
+        self.group_handler.groups_containing.side_effect = lambda pid: []
+        self.group_handler.co_members_of.side_effect = lambda pid: set()
+
+        msg = LiveSpeech()
+        msg.final = 'hi alone'
+
+        self.handler._on_speech('charlie', msg)
+
+        charlie_d = self.mock_dialogue_manager.get_dialogue_for_interlocutor(
+            Interlocutor(person_id='charlie')
+        )
+        assert charlie_d is not None
+        assert len(charlie_d.history) == 1
+        # Only one dialogue total.
+        assert len(self.mock_dialogue_manager.active_dialogues) == 1
+
+
 class TestSpeechHandlerIntentPublishing:
     """Tests for intent publishing."""
 

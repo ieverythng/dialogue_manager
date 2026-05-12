@@ -27,6 +27,7 @@ from rclpy.subscription import Subscription
 from .chatbot_client import ChatbotClient
 from .conversations_history import ConversationsHistoryStore
 from .dialogue import Dialogue, DialogueManager, DialogueState, Interlocutor
+from .group_handler import GroupHandler
 
 
 # Lowest-priority bucket for auto-spawned default-chat dialogues.
@@ -38,14 +39,15 @@ class SpeechHandler:
     Handle speech input from tracked voices.
 
     Manages dynamic subscriptions to voice speech topics, records user
-    utterances against per-person dialogues, and either forwards them to a
-    chatbot (when one is attached) or publishes them as RAW_USER_INPUT
-    intents.
+    utterances against per-person and per-group dialogues, and either
+    forwards them to a chatbot (when one is attached) or publishes them
+    as RAW_USER_INPUT intents.
 
     When the `default_chat` mode is enabled, the first utterance from a
-    new speaker auto-spawns a per-person `Dialogue` (role = the configured
-    default role; chatbot dialogue attached asynchronously if a chatbot is
-    available). This keeps each speaker's history isolated.
+    new speaker auto-spawns a per-person `Dialogue`; if the speaker is
+    in any known ROS4HRI group, the group's dialogue and a per-person
+    dialogue for every co-member are also spawned, and the utterance is
+    recorded into all of them.
     """
 
     def __init__(
@@ -56,6 +58,7 @@ class SpeechHandler:
         conversations_store: ConversationsHistoryStore,
         closed_captions_pub: Publisher,
         intents_pub: Publisher,
+        group_handler: GroupHandler | None = None,
     ):
         """Initialize the speech handler."""
         self._node = node
@@ -64,16 +67,13 @@ class SpeechHandler:
         self._conversations_store = conversations_store
         self._closed_captions_pub = closed_captions_pub
         self._intents_pub = intents_pub
+        self._group_handler = group_handler
 
         self._tracked_voices: set[str] = set()
         self._voice_subscriptions: dict[str, Subscription] = {}
         self._voices_sub: Subscription | None = None
         self._chatbot_enabled = True
 
-        # Default-chat auto-spawn configuration. When `_default_chat_role`
-        # is non-empty, unmatched speech triggers a fresh per-person
-        # Dialogue carrying this role; chatbot attachment is then async if
-        # a chatbot is configured.
         self._default_chat_role: str = ''
         self._default_chat_role_config: str = '{}'
 
@@ -157,33 +157,32 @@ class SpeechHandler:
 
         self._publish_user_caption(voice_id, msg.final, msg.locale)
 
-        # Find or spawn the dialogue for this speaker.
+        # Collect every dialogue that should receive this utterance:
+        # speaker's own + each group the speaker belongs to + each
+        # co-member's per-person dialogue. Missing dialogues are
+        # auto-spawned when default-chat is enabled.
         # TODO: Map voice_id to person_id via ROS4HRI
-        dialogue = self._dialogue_manager.get_dialogue_for_interlocutor(
-            Interlocutor(person_id=voice_id)
-        )
-        if dialogue is None and self._default_chat_role:
-            dialogue = self._spawn_default_dialogue(voice_id)
+        recipients = self._recipient_dialogues_for_speaker(voice_id)
 
-        if dialogue is not None:
+        for dialogue in recipients:
             dialogue.add_utterance(voice_id, msg.final, self._now())
 
-        # Forward to the chatbot if this dialogue is chatbot-backed AND the
-        # chatbot dialogue has been attached. Otherwise publish RAW_USER_INPUT
-        # so the controlling script can react.
+        # Forward to the speaker's chatbot if attached. Speaker's dialogue
+        # is the first recipient (when one exists / was spawned).
+        speaker_dialogue = recipients[0] if recipients else None
         chatbot_forwarding = (
             self._chatbot_enabled
             and self._chatbot_client is not None
-            and dialogue is not None
-            and dialogue.chatbot_goal_id is not None
+            and speaker_dialogue is not None
+            and speaker_dialogue.chatbot_goal_id is not None
         )
         if chatbot_forwarding:
             self._node.get_logger().info(
                 f'[SPEECH INPUT] Forwarding to chatbot for dialogue '
-                f'{dialogue.dialogue_id}'
+                f'{speaker_dialogue.dialogue_id}'
             )
             self._chatbot_client.send_input(
-                dialogue.dialogue_id, voice_id, msg.final
+                speaker_dialogue.dialogue_id, voice_id, msg.final
             )
             return
 
@@ -192,35 +191,99 @@ class SpeechHandler:
         )
         self._publish_raw_intent(msg.final, voice_id, msg.locale)
 
-    def _spawn_default_dialogue(self, voice_id: str) -> Dialogue:
-        """Create a fresh per-person default Dialogue for `voice_id`.
+    def _recipient_dialogues_for_speaker(self, voice_id: str) -> list[Dialogue]:
+        """Return every dialogue that should receive `voice_id`'s utterance.
 
-        Pre-fills the new dialogue's history with the most recent prior
-        summary for this person (if any). Triggers asynchronous chatbot
-        attachment when a chatbot is configured and reachable.
+        Order is: speaker → groups → co-members. Auto-spawns missing
+        dialogues if default-chat is enabled; otherwise only returns
+        already-active dialogues.
         """
+        speaker_dialogue = self._get_or_spawn_person_dialogue(voice_id)
+        result: list[Dialogue] = [speaker_dialogue] if speaker_dialogue else []
+
+        if self._group_handler is None:
+            return result
+
+        for group_id in self._group_handler.groups_containing(voice_id):
+            gd = self._get_or_spawn_group_dialogue(group_id)
+            if gd is not None and gd not in result:
+                result.append(gd)
+
+        for co_member_id in self._group_handler.co_members_of(voice_id):
+            pd = self._get_or_spawn_person_dialogue(co_member_id)
+            if pd is not None and pd not in result:
+                result.append(pd)
+
+        return result
+
+    # ------------------------------------------------------------ spawning
+
+    def _get_or_spawn_person_dialogue(self, person_id: str) -> Dialogue | None:
+        """Return the active person dialogue for `person_id`, spawning if needed.
+
+        Returns None if default-chat is disabled and no dialogue exists.
+        Spawned person dialogues attach to the chatbot (async) when one is
+        configured.
+        """
+        existing = self._dialogue_manager.get_dialogue_for_interlocutor(
+            Interlocutor(person_id=person_id)
+        )
+        if existing is not None:
+            return existing
+        if not self._default_chat_role:
+            return None
+        return self._spawn_dialogue(
+            Interlocutor(person_id=person_id),
+            attach_chatbot=True,
+        )
+
+    def _get_or_spawn_group_dialogue(self, group_id: str) -> Dialogue | None:
+        """Return the active group dialogue, spawning if needed.
+
+        Group dialogues are observational containers — no chatbot is
+        attached (the chatbot is a per-person conversation partner).
+        """
+        existing = self._dialogue_manager.get_dialogue_for_interlocutor(
+            Interlocutor(group_id=group_id)
+        )
+        if existing is not None:
+            return existing
+        if not self._default_chat_role:
+            return None
+        return self._spawn_dialogue(
+            Interlocutor(group_id=group_id),
+            attach_chatbot=False,
+        )
+
+    def _spawn_dialogue(
+        self, interlocutor: Interlocutor, attach_chatbot: bool
+    ) -> Dialogue:
+        """Create + register a fresh default-chat Dialogue for `interlocutor`."""
         role = DialogueRole()
         role.name = self._default_chat_role
         role.configuration = self._default_chat_role_config
         dialogue = Dialogue(
             role=role,
-            interlocutor=Interlocutor(person_id=voice_id),
+            interlocutor=interlocutor,
             priority=DEFAULT_CHAT_PRIORITY,
             state=DialogueState.ACTIVE,
         )
         if self._conversations_store.preload_into(dialogue, self._now()):
             self._node.get_logger().info(
-                f'[DEFAULT CHAT] Pre-filled prior summary for {voice_id}'
+                f'[DEFAULT CHAT] Pre-filled prior summary for {interlocutor.key}'
             )
         self._dialogue_manager.add_dialogue(dialogue)
         self._node.get_logger().info(
-            f'[DEFAULT CHAT] Spawned per-person dialogue '
-            f'{dialogue.dialogue_id} for "{voice_id}" '
-            f'(role="{role.name}")'
+            f'[DEFAULT CHAT] Spawned dialogue {dialogue.dialogue_id} for '
+            f'{interlocutor.key} (role="{role.name}")'
         )
-        if self._chatbot_client is not None and self._chatbot_enabled:
+        if (attach_chatbot
+                and self._chatbot_client is not None
+                and self._chatbot_enabled):
             self._chatbot_client.attach_to_dialogue(dialogue, role)
         return dialogue
+
+    # ------------------------------------------------------------ helpers
 
     def _publish_user_caption(self, speaker_id: str, text: str, locale: str) -> None:
         """Publish closed caption for user speech."""
