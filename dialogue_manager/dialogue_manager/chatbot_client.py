@@ -78,7 +78,6 @@ class ChatbotClient:
         self._dialogue_client: ActionClient | None = None
         self._interaction_client = None
         self._waiting_for_response = False
-        self._default_dialogue_id: UUID | None = None
 
     def _now(self) -> float:
         """Return the current time in epoch seconds, from the node clock."""
@@ -88,11 +87,6 @@ class ChatbotClient:
     def waiting_for_response(self) -> bool:
         """Return True if waiting for a chatbot response."""
         return self._waiting_for_response
-
-    @property
-    def default_dialogue_id(self) -> UUID | None:
-        """Return the default dialogue ID if active."""
-        return self._default_dialogue_id
 
     def create_clients(self, chatbot_prefix: str) -> None:
         """Create chatbot action and service clients."""
@@ -164,8 +158,8 @@ class ChatbotClient:
                 state=DialogueState.ACTIVE,
                 chatbot_goal_id=chatbot_goal_id
             )
-            self._default_dialogue_id = dialogue.dialogue_id
             self._dialogue_manager.add_dialogue(dialogue)
+            self._dialogue_manager.set_default_dialogue_id(dialogue.dialogue_id)
             self._node.get_logger().info(
                 f'[DEFAULT CHAT] Started successfully, '
                 f'internal_id={dialogue.dialogue_id}, chatbot_goal_id={chatbot_goal_id}'
@@ -209,6 +203,7 @@ class ChatbotClient:
         self._waiting_for_response = True
         self._waiting_chatbot_pub.publish(Bool(data=True))
         dialogue.state = DialogueState.WAITING_RESPONSE
+        self._dialogue_manager.notify_change(dialogue.dialogue_id)
         self._node.get_logger().debug('[CHATBOT] State set to WAITING_RESPONSE')
 
         # Build and send request - use chatbot_goal_id, not internal dialogue_id
@@ -238,6 +233,7 @@ class ChatbotClient:
         dialogue = self._dialogue_manager.get_dialogue(dialogue_id)
         if dialogue:
             dialogue.state = DialogueState.ACTIVE
+            self._dialogue_manager.notify_change(dialogue.dialogue_id)
 
         try:
             response = future.result()

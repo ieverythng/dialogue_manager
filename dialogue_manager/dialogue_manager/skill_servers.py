@@ -169,6 +169,9 @@ class SkillServers:
                 return
             dialogue.summary = summary
             dialogue.summary_generated_at = self._now()
+            # The archived dialogue lives in the conversations store; notify
+            # observers so the snapshot reflects the freshly-landed summary.
+            self._dialogue_manager.notify_change(dialogue.dialogue_id)
             self._node.get_logger().debug(
                 f'[SKILLS] Summary stored for dialogue {dialogue.dialogue_id}'
             )
@@ -388,6 +391,7 @@ class SkillServers:
             )
 
         dialogue.state = DialogueState.ACTIVE
+        self._dialogue_manager.notify_change(dialogue.dialogue_id)
         self._node.get_logger().info(f'[CHAT] Dialogue {dialogue.dialogue_id} now ACTIVE')
 
         # Prime the chatbot (no-op if chatbot is absent).
@@ -503,6 +507,7 @@ class SkillServers:
             )
 
         dialogue.state = DialogueState.ACTIVE
+        self._dialogue_manager.notify_change(dialogue.dialogue_id)
 
         self._node.get_logger().info('[ASK] Speaking question via Say sub-skill')
         self._say_client.speak(

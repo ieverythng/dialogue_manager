@@ -185,7 +185,6 @@ class TestSpeechHandlerOnSpeech:
         self.mock_dialogue_manager = DialogueManager()
         self.mock_chatbot_client = MagicMock()
         self.mock_chatbot_client.waiting_for_response = False
-        self.mock_chatbot_client.default_dialogue_id = None
         self.mock_captions_pub = MagicMock()
         self.mock_intents_pub = MagicMock()
 
@@ -277,7 +276,7 @@ class TestSpeechHandlerOnSpeech:
             chatbot_goal_id=uuid4(),
         )
         self.mock_dialogue_manager.add_dialogue(default_dialogue)
-        self.mock_chatbot_client.default_dialogue_id = default_id
+        self.mock_dialogue_manager.set_default_dialogue_id(default_id)
 
         msg = LiveSpeech()
         msg.final = 'Hello'
@@ -287,6 +286,33 @@ class TestSpeechHandlerOnSpeech:
         self.mock_chatbot_client.send_input.assert_called_once_with(
             default_id, 'voice1', 'Hello'
         )
+
+    def test_on_speech_uses_passive_default_dialogue(self):
+        """Speech records into a chatbot-less default dialogue without forwarding."""
+        default_id = uuid4()
+        default_dialogue = Dialogue(
+            role=DialogueRole(name='default'),
+            interlocutor=Interlocutor(),
+            state=DialogueState.ACTIVE,
+            dialogue_id=default_id,
+            # No chatbot_goal_id → passive default
+        )
+        self.mock_dialogue_manager.add_dialogue(default_dialogue)
+        self.mock_dialogue_manager.set_default_dialogue_id(default_id)
+
+        msg = LiveSpeech()
+        msg.final = 'hiya'
+
+        self.handler._on_speech('voice1', msg)
+
+        # No chatbot forwarding.
+        self.mock_chatbot_client.send_input.assert_not_called()
+        # But the utterance lands in the default dialogue.
+        assert len(default_dialogue.history) == 1
+        assert default_dialogue.history[0].text == 'hiya'
+        assert default_dialogue.history[0].speaker_id == 'voice1'
+        # And a RAW_USER_INPUT intent is published.
+        self.mock_intents_pub.publish.assert_called_once()
 
     def test_on_speech_no_dialogue_publishes_intent(self):
         """Speech with no active dialogue publishes raw intent."""

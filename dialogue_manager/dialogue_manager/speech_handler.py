@@ -133,13 +133,13 @@ class SpeechHandler:
         self._publish_user_caption(voice_id, msg.final, msg.locale)
 
         # Find the active dialogue for this person, falling back to the
-        # default chatbot dialogue when one is active.
+        # default dialogue when one is configured (chatbot-backed or not).
         # TODO: Map voice_id to person_id via ROS4HRI
         dialogue = self._dialogue_manager.get_dialogue_for_interlocutor(
             Interlocutor(person_id=voice_id)
         )
-        if dialogue is None and self._chatbot_client is not None:
-            default_id = self._chatbot_client.default_dialogue_id
+        if dialogue is None:
+            default_id = self._dialogue_manager.default_dialogue_id
             if default_id is not None:
                 dialogue = self._dialogue_manager.get_dialogue(default_id)
 

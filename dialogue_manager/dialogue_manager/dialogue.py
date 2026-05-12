@@ -14,6 +14,7 @@
 
 """Data structures for tracking active dialogues."""
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from uuid import UUID, uuid4
@@ -124,6 +125,12 @@ class Dialogue:
     summary_generated_at: float | None = None
     chatbot_goal_id: UUID | None = None  # The chatbot action goal UUID
     goal_handle: object | None = None  # The skill action goal handle
+    # Hook fired after any state-changing mutation on this dialogue
+    # (add_utterance for now). Set by DialogueManager.add_dialogue so the
+    # debug-state publisher can react to changes without invasive plumbing.
+    _change_callback: Callable[[], None] | None = field(
+        default=None, repr=False, compare=False,
+    )
 
     def __post_init__(self):
         """Validate priority range."""
@@ -142,7 +149,8 @@ class Dialogue:
         Append an utterance, lazily setting `started_at` on the first one.
 
         Any new utterance invalidates a cached summary (the dialogue's content
-        has changed).
+        has changed). The `_change_callback` (if set) is fired so downstream
+        consumers (e.g. the debug-state publisher) can react.
         """
         utt = Utterance(timestamp=timestamp, speaker_id=speaker_id, text=text)
         self.history.append(utt)
@@ -150,6 +158,11 @@ class Dialogue:
             self.started_at = timestamp
         self.summary = None
         self.summary_generated_at = None
+        if self._change_callback is not None:
+            try:
+                self._change_callback()
+            except Exception:
+                pass  # never let a hook break utterance recording
         return utt
 
 
@@ -165,6 +178,16 @@ class DialogueManager:
         """Initialize the dialogue manager."""
         self._dialogues: dict[UUID, Dialogue] = {}
         self._current_expression_priority: int = -1
+        # The catch-all 'default' dialogue: anything spoken to the robot when
+        # no other dialogue is active for that interlocutor falls into here.
+        # May be backed by the chatbot or run chatbot-less (in which case the
+        # dialogue is purely a history container driven by the SpeechHandler).
+        self._default_dialogue_id: UUID | None = None
+        # Optional observer hook invoked whenever the manager's state changes.
+        # `dialogue_id` is the UUID string of the affected dialogue, or None
+        # for changes that don't pertain to one specific dialogue
+        # (e.g. expression priority, clear_all).
+        self._on_change: Callable[[str | None], None] | None = None
 
     @property
     def active_dialogues(self) -> dict[UUID, Dialogue]:
@@ -186,13 +209,64 @@ class DialogueManager:
         """Check if a new goal with given priority can be accepted."""
         return priority > self.current_max_priority
 
+    @property
+    def default_dialogue_id(self) -> UUID | None:
+        """Return the current default-dialogue UUID, if any."""
+        return self._default_dialogue_id
+
+    def set_default_dialogue_id(self, dialogue_id: UUID | None) -> None:
+        """Mark a dialogue as the default (catch-all) for unbound speech."""
+        self._default_dialogue_id = dialogue_id
+        self.notify_change(dialogue_id)
+
+    def set_change_callback(
+        self, callback: Callable[[str | None], None] | None
+    ) -> None:
+        """Register an observer fired when manager state changes.
+
+        Existing tracked dialogues have their `_change_callback` wired in
+        immediately so utterance additions also propagate.
+        """
+        self._on_change = callback
+        for d in self._dialogues.values():
+            d._change_callback = self._make_dialogue_hook(d.dialogue_id)
+
+    def notify_change(self, dialogue_id: UUID | None = None) -> None:
+        """Manually notify observers of a state change (state, summary, ...)."""
+        if self._on_change is None:
+            return
+        try:
+            self._on_change(str(dialogue_id) if dialogue_id else None)
+        except Exception:
+            pass  # never let a debug-only hook break the main flow
+
+    def _make_dialogue_hook(self, dialogue_id: UUID) -> Callable[[], None]:
+        did = str(dialogue_id)
+
+        def _hook() -> None:
+            if self._on_change is not None:
+                try:
+                    self._on_change(did)
+                except Exception:
+                    pass
+
+        return _hook
+
     def add_dialogue(self, dialogue: Dialogue) -> None:
         """Add a new dialogue to track."""
         self._dialogues[dialogue.dialogue_id] = dialogue
+        dialogue._change_callback = self._make_dialogue_hook(dialogue.dialogue_id)
+        self.notify_change(dialogue.dialogue_id)
 
     def remove_dialogue(self, dialogue_id: UUID) -> Dialogue | None:
         """Remove and return a dialogue by ID."""
-        return self._dialogues.pop(dialogue_id, None)
+        removed = self._dialogues.pop(dialogue_id, None)
+        if removed is not None:
+            removed._change_callback = None
+            if self._default_dialogue_id == dialogue_id:
+                self._default_dialogue_id = None
+            self.notify_change(dialogue_id)
+        return removed
 
     def get_dialogue(self, dialogue_id: UUID) -> Dialogue | None:
         """Get a dialogue by ID."""
@@ -213,11 +287,17 @@ class DialogueManager:
     def set_expression_priority(self, priority: int) -> None:
         """Set the priority of the currently executing expression."""
         self._current_expression_priority = priority
+        self.notify_change()
 
     def clear_expression_priority(self) -> None:
         """Clear the expression priority (no expression running)."""
         self._current_expression_priority = -1
+        self.notify_change()
 
     def clear_all(self) -> None:
         """Clear all active dialogues."""
+        for d in self._dialogues.values():
+            d._change_callback = None
         self._dialogues.clear()
+        self._default_dialogue_id = None
+        self.notify_change()

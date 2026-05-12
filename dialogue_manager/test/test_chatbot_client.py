@@ -80,18 +80,6 @@ class TestChatbotClientInit:
 
         assert client.waiting_for_response is False
 
-    def test_init_default_dialogue_id_none(self):
-        """Client starts with no default dialogue."""
-        client = ChatbotClient(
-            node=MagicMock(),
-            dialogue_manager=MagicMock(),
-            say_client=MagicMock(),
-            intents_pub=MagicMock(),
-            waiting_chatbot_pub=MagicMock()
-        )
-
-        assert client.default_dialogue_id is None
-
 
 class TestChatbotClientCreateClients:
     """Tests for creating chatbot clients."""

@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
+from chatbot_msgs.msg import DialogueRole
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from hri_actions_msgs.msg import ClosedCaption, Intent
 from rcl_interfaces.msg import ParameterDescriptor
@@ -27,7 +28,13 @@ from std_msgs.msg import Bool, String
 
 from .chatbot_client import ChatbotClient
 from .conversations_history import ConversationsHistoryStore
-from .dialogue import DialogueManager, DialogueState
+from .debug_publisher import DebugStatePublisher
+from .dialogue import (
+    Dialogue,
+    DialogueManager,
+    DialogueState,
+    Interlocutor,
+)
 from .markup import ActionLibrary, ExpressionExecutor
 from .say_client import SayClient
 from .skill_servers import SkillServers
@@ -67,6 +74,7 @@ class DialogueManagerNode(LifecycleNode):
         self._skill_servers: SkillServers | None = None
         self._action_library: ActionLibrary | None = None
         self._expression_executor: ExpressionExecutor | None = None
+        self._debug_publisher: DebugStatePublisher | None = None
 
         # Publishers (created in on_configure)
         self._closed_captions_pub = None
@@ -277,11 +285,46 @@ class DialogueManagerNode(LifecycleNode):
         self._skill_servers.create_servers()
         self.get_logger().debug('[CONFIGURE] Skill servers created')
 
+        # Debug-state publisher (on-change snapshot for rqt_dialogues etc.).
+        self._debug_publisher = DebugStatePublisher(
+            node=self,
+            dialogue_manager=self._dialogue_manager,
+            conversations_store=self._conversations_store,
+            chatbot_status=self._chatbot_status_snapshot,
+            active_status=lambda: (
+                self._skill_servers is not None
+                and self._skill_servers._is_active
+            ),
+        )
+        self._debug_publisher.create_publisher()
+        self._dialogue_manager.set_change_callback(
+            lambda did=None: self._debug_publisher.notify(did)
+        )
+        self._debug_publisher.notify()  # initial snapshot
+
         # Diagnostics timer
         self._diag_timer = self.create_timer(1.0, self._publish_diagnostics)
 
         self.get_logger().info('Dialogue Manager configured.')
         return TransitionCallbackReturn.SUCCESS
+
+    def _chatbot_status_snapshot(self) -> dict:
+        """Return the current chatbot status for debug snapshots."""
+        default_id = self._dialogue_manager.default_dialogue_id
+        default_id_str = str(default_id) if default_id else None
+        if self._chatbot_client is None:
+            return {
+                'configured': False,
+                'available': False,
+                'waiting_for_response': False,
+                'default_dialogue_id': default_id_str,
+            }
+        return {
+            'configured': True,
+            'available': self._chatbot_client.is_available(timeout_sec=0.0),
+            'waiting_for_response': self._chatbot_client.waiting_for_response,
+            'default_dialogue_id': default_id_str,
+        }
 
     def on_activate(self, state: State) -> TransitionCallbackReturn:
         """Activate the node: subscribe to speech, optionally start default chat."""
@@ -304,19 +347,59 @@ class DialogueManagerNode(LifecycleNode):
                 f'(interval={CONVERSATIONS_PERSIST_INTERVAL_SEC}s)'
             )
 
-        # Start default chat if enabled
+        # Start the default catch-all dialogue if enabled. Chatbot-backed
+        # when one is available, chatbot-less (passive history container)
+        # otherwise — either way speech that doesn't match a more specific
+        # dialogue lands here.
         if self.get_parameter('enable_default_chat').get_parameter_value().bool_value:
-            if self._chatbot_client:
-                role = self.get_parameter('default_chat_role').get_parameter_value().string_value
-                config = self.get_parameter(
-                    'default_chat_configuration'
-                ).get_parameter_value().string_value
-                self._chatbot_client.start_default_chat(role, config)
+            role_name = (
+                self.get_parameter('default_chat_role')
+                .get_parameter_value().string_value
+            )
+            role_config = (
+                self.get_parameter('default_chat_configuration')
+                .get_parameter_value().string_value
+            )
+            chatbot_ready = (
+                self._chatbot_client is not None
+                and self._chatbot_client.is_available(timeout_sec=1.0)
+            )
+            if chatbot_ready:
+                self._chatbot_client.start_default_chat(role_name, role_config)
             else:
-                self.get_logger().warn('[ACTIVATE] Default chat enabled but no chatbot configured')
+                self._start_passive_default_chat(role_name, role_config)
+
+        if self._debug_publisher is not None:
+            self._debug_publisher.notify()  # active state changed
 
         self.get_logger().info('Dialogue Manager activated.')
         return super().on_activate(state)
+
+    def _start_passive_default_chat(self, role_name: str, role_config: str) -> None:
+        """Create a chatbot-less default Dialogue.
+
+        Used when `enable_default_chat=True` but no chatbot is configured
+        (or the chatbot server is unreachable). Acts as a history container
+        for any speech that doesn't match a more specific dialogue.
+        """
+        self.get_logger().info(
+            f'[DEFAULT CHAT] Starting passive (chatbot-less) default '
+            f'dialogue with role="{role_name}"'
+        )
+        role = DialogueRole()
+        role.name = role_name
+        role.configuration = role_config or '{}'
+        dialogue = Dialogue(
+            role=role,
+            interlocutor=Interlocutor(),
+            priority=0,  # default chat is the lowest-priority bucket
+            state=DialogueState.ACTIVE,
+        )
+        self._dialogue_manager.add_dialogue(dialogue)
+        self._dialogue_manager.set_default_dialogue_id(dialogue.dialogue_id)
+        self.get_logger().info(
+            f'[DEFAULT CHAT] Passive dialogue {dialogue.dialogue_id} active'
+        )
 
     def on_deactivate(self, state: State) -> TransitionCallbackReturn:
         """Deactivate the node: unsubscribe, disable servers."""
@@ -327,6 +410,9 @@ class DialogueManagerNode(LifecycleNode):
 
         # Unsubscribe from voices
         self._speech_handler.unsubscribe_all()
+
+        if self._debug_publisher is not None:
+            self._debug_publisher.notify()  # active state changed
 
         # Stop the persistence timer.
         if self._persist_timer is not None:
@@ -396,6 +482,10 @@ class DialogueManagerNode(LifecycleNode):
             self._say_client.destroy()
         if self._chatbot_client:
             self._chatbot_client.destroy()
+        if self._debug_publisher is not None:
+            self._dialogue_manager.set_change_callback(None)
+            self._debug_publisher.destroy()
+            self._debug_publisher = None
 
         self.get_logger().info('Dialogue Manager shutdown complete.')
         return TransitionCallbackReturn.SUCCESS
