@@ -363,6 +363,66 @@ class TestSkillServersPriorityRejection:
         assert result == GoalResponse.ACCEPT
 
 
+class TestBroadcastSayUtterance:
+    """Say without person_id/group_id should land in every active dialogue."""
+
+    def _build(self):
+        dm = DialogueManager()
+        servers = SkillServers(
+            node=MagicMock(),
+            dialogue_manager=dm,
+            chatbot_client=MagicMock(),
+            say_client=MagicMock(),
+            conversations_store=ConversationsHistoryStore(),
+            group_resolver=_empty_group_resolver,
+            closed_captions_pub=MagicMock(),
+        )
+        # _strip_markup falls back to raw text when no executor is configured.
+        return dm, servers
+
+    def test_broadcast_records_into_all_active_bound_dialogues(self):
+        from dialogue_manager.dialogue import ROBOT_SPEAKER_ID
+        dm, servers = self._build()
+        alice = Dialogue(
+            role=DialogueRole(name='__default__'),
+            interlocutor=Interlocutor(person_id='alice'),
+            state=DialogueState.ACTIVE,
+        )
+        bob = Dialogue(
+            role=DialogueRole(name='__default__'),
+            interlocutor=Interlocutor(person_id='bob'),
+            state=DialogueState.ACTIVE,
+        )
+        dm.add_dialogue(alice)
+        dm.add_dialogue(bob)
+
+        servers._broadcast_say_utterance('Hello guys')
+
+        assert len(alice.history) == 1
+        assert len(bob.history) == 1
+        for d in (alice, bob):
+            assert d.history[0].speaker_id == ROBOT_SPEAKER_ID
+            assert d.history[0].text == 'Hello guys'
+
+    def test_broadcast_skips_unbound_dialogues(self):
+        dm, servers = self._build()
+        unbound = Dialogue(
+            role=DialogueRole(name='__default__'),
+            interlocutor=Interlocutor(),
+            state=DialogueState.ACTIVE,
+        )
+        dm.add_dialogue(unbound)
+
+        servers._broadcast_say_utterance('Hello')
+
+        assert unbound.history == []
+
+    def test_broadcast_no_active_dialogues_is_noop(self):
+        _, servers = self._build()
+        # Must not raise.
+        servers._broadcast_say_utterance('Hello')
+
+
 class TestSkillServersCancelCallback:
     """Tests for cancel callback."""
 

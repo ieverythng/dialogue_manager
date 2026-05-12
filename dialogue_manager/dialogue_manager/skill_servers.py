@@ -660,9 +660,12 @@ class SkillServers:
             goal_handle.abort()
             return result
 
-        # If addressed at a specific person/group, record the spoken text in
-        # the corresponding dialogue history (or as a one-shot synthetic
-        # __say__ dialogue when no chat is active for that interlocutor).
+        # Record the spoken text. If addressed at a specific person/group,
+        # land it in their dialogue (or as a synthetic __say__ archive if
+        # no dialogue is currently active for them). Otherwise broadcast:
+        # record into every active dialogue with a bound interlocutor —
+        # the robot just said this aloud, so it's relevant context for
+        # everyone currently being talked to.
         if request.person_id or request.group_id:
             self._record_say_utterance(
                 Interlocutor(
@@ -671,6 +674,8 @@ class SkillServers:
                 ),
                 request.input,
             )
+        else:
+            self._broadcast_say_utterance(request.input)
 
         self._node.get_logger().info('[SAY] Completed successfully')
         goal_handle.succeed()
@@ -680,10 +685,7 @@ class SkillServers:
         self, interlocutor: Interlocutor, raw_input: str
     ) -> None:
         """Record a Say utterance against an interlocutor's history."""
-        plain_text = (
-            self._expression_executor.get_plain_text(raw_input)
-            if self._expression_executor else raw_input
-        )
+        plain_text = self._strip_markup(raw_input)
         if not plain_text:
             return
 
@@ -705,3 +707,38 @@ class SkillServers:
             if interlocutor.is_group else None
         )
         self._conversations_store.archive(synthetic, group_members=members)
+
+    def _broadcast_say_utterance(self, raw_input: str) -> None:
+        """Record a Say utterance against every active bound dialogue.
+
+        Used when the Say goal carries no specific person/group: the
+        robot spoke this aloud, so anyone currently being engaged
+        should see it in their dialogue history.
+        """
+        plain_text = self._strip_markup(raw_input)
+        if not plain_text:
+            return
+
+        timestamp = self._now()
+        active_dialogues = [
+            d for d in self._dialogue_manager.active_dialogues.values()
+            if d.state in (DialogueState.ACTIVE, DialogueState.WAITING_RESPONSE)
+            and d.interlocutor.is_bound
+        ]
+        if not active_dialogues:
+            self._node.get_logger().debug(
+                '[SAY] Broadcast utterance has no active dialogue to record into'
+            )
+            return
+        for dialogue in active_dialogues:
+            dialogue.add_utterance(ROBOT_SPEAKER_ID, plain_text, timestamp)
+        self._node.get_logger().info(
+            f'[SAY] Recorded broadcast utterance into '
+            f'{len(active_dialogues)} active dialogue(s)'
+        )
+
+    def _strip_markup(self, raw_input: str) -> str:
+        """Return the plain-text version of `raw_input` (markup removed)."""
+        if self._expression_executor:
+            return self._expression_executor.get_plain_text(raw_input)
+        return raw_input
