@@ -269,6 +269,14 @@ class TestSpeechHandlerOnSpeech:
     def test_on_speech_uses_default_dialogue(self):
         """Speech routes to default dialogue when no person dialogue."""
         default_id = uuid4()
+        default_dialogue = Dialogue(
+            role=DialogueRole(name='default'),
+            interlocutor=Interlocutor(),
+            state=DialogueState.ACTIVE,
+            dialogue_id=default_id,
+            chatbot_goal_id=uuid4(),
+        )
+        self.mock_dialogue_manager.add_dialogue(default_dialogue)
         self.mock_chatbot_client.default_dialogue_id = default_id
 
         msg = LiveSpeech()

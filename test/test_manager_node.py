@@ -103,7 +103,7 @@ class TestDialogueManagerNodeConfigure:
         node.on_configure(state)
 
         assert node._dialogue_manager is not None
-        assert node._tts_client is not None
+        assert node._say_client is not None
         assert node._chatbot_client is not None
         assert node._speech_handler is not None
         assert node._skill_servers is not None

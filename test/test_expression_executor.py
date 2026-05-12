@@ -28,19 +28,19 @@ from dialogue_manager.markup.ast_nodes import (
 from dialogue_manager.markup.executor import ExpressionExecutor
 
 
-def _make_executor(tts_client=None, action_library=None):
+def _make_executor(say_client=None, action_library=None):
     """Create an ExpressionExecutor with mocked dependencies."""
     node = MagicMock()
-    if tts_client is None:
-        tts_client = MagicMock()
-        tts_client.speak_and_wait.return_value = True
+    if say_client is None:
+        say_client = MagicMock()
+        say_client.speak_and_wait.return_value = True
     if action_library is None:
         action_library = MagicMock(spec=ActionLibrary)
         action_library.get_definition.return_value = None
         action_library.default_timeout = 10.0
     return ExpressionExecutor(
         node=node,
-        tts_client=tts_client,
+        say_client=say_client,
         action_library=action_library,
         expression_timeout=60.0,
     )
@@ -53,7 +53,7 @@ class TestExecutorPlainText:
         """Plain text is sent to TTS."""
         tts = MagicMock()
         tts.speak_and_wait.return_value = True
-        executor = _make_executor(tts_client=tts)
+        executor = _make_executor(say_client=tts)
 
         expr = Expression(segments=(TextSegment(text='Hello world'),))
         result = executor.execute(expr)
@@ -66,7 +66,7 @@ class TestExecutorPlainText:
     def test_empty_expression_succeeds(self):
         """Empty expression succeeds without calling TTS."""
         tts = MagicMock()
-        executor = _make_executor(tts_client=tts)
+        executor = _make_executor(say_client=tts)
 
         expr = Expression(segments=())
         result = executor.execute(expr)
@@ -78,7 +78,7 @@ class TestExecutorPlainText:
         """Whitespace-only text segments are not spoken."""
         tts = MagicMock()
         tts.speak_and_wait.return_value = True
-        executor = _make_executor(tts_client=tts)
+        executor = _make_executor(say_client=tts)
 
         expr = Expression(segments=(TextSegment(text='  '),))
         result = executor.execute(expr)
@@ -94,7 +94,7 @@ class TestExecutorVariableText:
         """Variable text is resolved from variables dict."""
         tts = MagicMock()
         tts.speak_and_wait.return_value = True
-        executor = _make_executor(tts_client=tts)
+        executor = _make_executor(say_client=tts)
 
         expr = Expression(segments=(
             TextSegment(text='Hello '),
@@ -113,7 +113,7 @@ class TestExecutorVariableText:
         """Default is used when variable not in dict."""
         tts = MagicMock()
         tts.speak_and_wait.return_value = True
-        executor = _make_executor(tts_client=tts)
+        executor = _make_executor(say_client=tts)
 
         expr = Expression(segments=(
             VariableText(query=('missing',), default='friend'),
@@ -363,7 +363,7 @@ class TestExecutorNestedFields:
         action_lib.get_client.return_value = mock_publisher
         action_lib.default_timeout = 10.0
 
-        executor = _make_executor(tts_client=tts, action_library=action_lib)
+        executor = _make_executor(say_client=tts, action_library=action_lib)
 
         # Mimics: "Hello<set expression(happy)>what are you doing"
         expr = Expression(segments=(
@@ -396,7 +396,7 @@ class TestExecutorTextParsing:
         """Plain text string is parsed and spoken."""
         tts = MagicMock()
         tts.speak_and_wait.return_value = True
-        executor = _make_executor(tts_client=tts)
+        executor = _make_executor(say_client=tts)
 
         result = executor.execute_text('Hello world')
 
@@ -407,7 +407,7 @@ class TestExecutorTextParsing:
         """Invalid markup falls back to speaking raw text."""
         tts = MagicMock()
         tts.speak_and_wait.return_value = True
-        executor = _make_executor(tts_client=tts)
+        executor = _make_executor(say_client=tts)
 
         result = executor.execute_text('<invalid>')
 
@@ -462,7 +462,7 @@ class TestExecutorMixedExpression:
         action_lib.get_definition.return_value = None
         action_lib.default_timeout = 10.0
 
-        executor = _make_executor(tts_client=tts, action_library=action_lib)
+        executor = _make_executor(say_client=tts, action_library=action_lib)
 
         expr = Expression(segments=(
             MarkupAction(verb='set', name='expression',
@@ -482,7 +482,7 @@ class TestExecutorMixedExpression:
         """Consecutive text and variable segments are merged into one TTS call."""
         tts = MagicMock()
         tts.speak_and_wait.return_value = True
-        executor = _make_executor(tts_client=tts)
+        executor = _make_executor(say_client=tts)
 
         expr = Expression(segments=(
             TextSegment(text='Hello '),

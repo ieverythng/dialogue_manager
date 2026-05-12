@@ -30,7 +30,7 @@ class VariableRef:
 
 @dataclass
 class TextSegment:
-    """Plain text to be sent to TTS."""
+    """Plain text to be sent to the Say sub-skill."""
 
     text: str
 

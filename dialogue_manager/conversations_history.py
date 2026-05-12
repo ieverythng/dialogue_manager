@@ -97,9 +97,9 @@ class ConversationsHistoryStore:
                 dialogue.dialogue_id,
             )
             return
-        if not dialogue.history:
+        if not dialogue.session_utterances:
             self._logger.debug(
-                'Skipping archival: dialogue %s has no utterances',
+                'Skipping archival: dialogue %s has no session utterances',
                 dialogue.dialogue_id,
             )
             return
@@ -251,13 +251,17 @@ class ConversationsHistoryStore:
             'priority': d.priority,
             'started_at': d.started_at,
             'ended_at': d.ended_at,
+            # Only persist the actual session's utterances. Pre-filled summary
+            # entries and session-break markers (before session_start_index)
+            # are reconstructed at load time from the prior dialogue's stored
+            # summary, so we must not serialize them here.
             'history': [
                 {
                     'timestamp': u.timestamp,
                     'speaker_id': u.speaker_id,
                     'text': u.text,
                 }
-                for u in d.history
+                for u in d.session_utterances
             ],
             'summary': d.summary,
             'summary_generated_at': d.summary_generated_at,

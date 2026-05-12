@@ -14,11 +14,20 @@
 
 """Unit tests for skill_servers.py with mocked ROS2 dependencies."""
 
+import time
 from unittest.mock import MagicMock, patch
 
+from chatbot_msgs.msg import DialogueRole
 from dialogue_manager.conversations_history import ConversationsHistoryStore
-from dialogue_manager.dialogue import DialogueManager
-from dialogue_manager.skill_servers import SkillServers
+from dialogue_manager.dialogue import (
+    Dialogue,
+    DialogueManager,
+    DialogueState,
+    Interlocutor,
+    SESSION_BREAK_SPEAKER_ID,
+    SUMMARY_SPEAKER_ID,
+)
+from dialogue_manager.skill_servers import default_summarizer, SkillServers
 
 
 def _empty_group_resolver(_group_id: str) -> list[str]:
@@ -33,14 +42,14 @@ class TestSkillServersInit:
         mock_node = MagicMock()
         mock_dialogue_manager = MagicMock()
         mock_chatbot_client = MagicMock()
-        mock_tts_client = MagicMock()
+        mock_say_client = MagicMock()
         mock_captions_pub = MagicMock()
 
         servers = SkillServers(
             node=mock_node,
             dialogue_manager=mock_dialogue_manager,
             chatbot_client=mock_chatbot_client,
-            tts_client=mock_tts_client,
+            say_client=mock_say_client,
             conversations_store=ConversationsHistoryStore(),
             group_resolver=_empty_group_resolver,
             closed_captions_pub=mock_captions_pub
@@ -49,7 +58,7 @@ class TestSkillServersInit:
         assert servers._node is mock_node
         assert servers._dialogue_manager is mock_dialogue_manager
         assert servers._chatbot_client is mock_chatbot_client
-        assert servers._tts_client is mock_tts_client
+        assert servers._say_client is mock_say_client
         assert servers._closed_captions_pub is mock_captions_pub
 
     def test_init_starts_inactive(self):
@@ -58,7 +67,7 @@ class TestSkillServersInit:
             node=MagicMock(),
             dialogue_manager=MagicMock(),
             chatbot_client=MagicMock(),
-            tts_client=MagicMock(),
+            say_client=MagicMock(),
             conversations_store=ConversationsHistoryStore(),
             group_resolver=_empty_group_resolver,
             closed_captions_pub=MagicMock()
@@ -76,7 +85,7 @@ class TestSkillServersSetActive:
             node=MagicMock(),
             dialogue_manager=MagicMock(),
             chatbot_client=MagicMock(),
-            tts_client=MagicMock(),
+            say_client=MagicMock(),
             conversations_store=ConversationsHistoryStore(),
             group_resolver=_empty_group_resolver,
             closed_captions_pub=MagicMock()
@@ -92,7 +101,7 @@ class TestSkillServersSetActive:
             node=MagicMock(),
             dialogue_manager=MagicMock(),
             chatbot_client=MagicMock(),
-            tts_client=MagicMock(),
+            say_client=MagicMock(),
             conversations_store=ConversationsHistoryStore(),
             group_resolver=_empty_group_resolver,
             closed_captions_pub=MagicMock()
@@ -114,7 +123,7 @@ class TestSkillServersCreateServers:
             node=mock_node,
             dialogue_manager=MagicMock(),
             chatbot_client=MagicMock(),
-            tts_client=MagicMock(),
+            say_client=MagicMock(),
             conversations_store=ConversationsHistoryStore(),
             group_resolver=_empty_group_resolver,
             closed_captions_pub=MagicMock()
@@ -136,7 +145,7 @@ class TestSkillServersDestroy:
             node=MagicMock(),
             dialogue_manager=MagicMock(),
             chatbot_client=MagicMock(),
-            tts_client=MagicMock(),
+            say_client=MagicMock(),
             conversations_store=ConversationsHistoryStore(),
             group_resolver=_empty_group_resolver,
             closed_captions_pub=MagicMock()
@@ -165,13 +174,13 @@ class TestSkillServersGoalCallbacks:
         self.mock_node = MagicMock()
         self.mock_dialogue_manager = DialogueManager()
         self.mock_chatbot_client = MagicMock()
-        self.mock_tts_client = MagicMock()
+        self.mock_say_client = MagicMock()
 
         self.servers = SkillServers(
             node=self.mock_node,
             dialogue_manager=self.mock_dialogue_manager,
             chatbot_client=self.mock_chatbot_client,
-            tts_client=self.mock_tts_client,
+            say_client=self.mock_say_client,
             conversations_store=ConversationsHistoryStore(),
             group_resolver=_empty_group_resolver,
             closed_captions_pub=MagicMock()
@@ -255,7 +264,7 @@ class TestSkillServersPriorityRejection:
             node=MagicMock(),
             dialogue_manager=self.mock_dialogue_manager,
             chatbot_client=MagicMock(),
-            tts_client=MagicMock(),
+            say_client=MagicMock(),
             conversations_store=ConversationsHistoryStore(),
             group_resolver=_empty_group_resolver,
             closed_captions_pub=MagicMock()
@@ -309,7 +318,7 @@ class TestSkillServersCancelCallback:
             node=MagicMock(),
             dialogue_manager=MagicMock(),
             chatbot_client=MagicMock(),
-            tts_client=MagicMock(),
+            say_client=MagicMock(),
             conversations_store=ConversationsHistoryStore(),
             group_resolver=_empty_group_resolver,
             closed_captions_pub=MagicMock()
@@ -321,3 +330,184 @@ class TestSkillServersCancelCallback:
         result = servers._cancel_callback(mock_goal_handle)
 
         assert result == CancelResponse.ACCEPT
+
+
+def _build_servers(
+    dialogue_manager=None,
+    chatbot_client=None,
+    conversations_store=None,
+    summarizer=None,
+):
+    """Build a SkillServers wired with mocks for the tests below."""
+    mock_node = MagicMock()
+    mock_node.get_clock.return_value.now.return_value.nanoseconds = int(1e9)
+    return SkillServers(
+        node=mock_node,
+        dialogue_manager=dialogue_manager or DialogueManager(),
+        chatbot_client=chatbot_client,
+        say_client=MagicMock(),
+        conversations_store=conversations_store or ConversationsHistoryStore(),
+        group_resolver=_empty_group_resolver,
+        closed_captions_pub=MagicMock(),
+        summarizer=summarizer,
+    )
+
+
+class TestDefaultSummarizer:
+    """The built-in fallback summarizer must run without an LLM."""
+
+    def test_renders_session_utterances(self):
+        """default_summarizer returns the session's utterances as text."""
+        import asyncio
+        d = Dialogue(role=DialogueRole(name='test'))
+        d.add_utterance('alice', 'hi', 1.0)
+        d.add_utterance('__myself__', 'hello', 2.0)
+        out = asyncio.run(default_summarizer(d, []))
+        assert 'alice: hi' in out
+        assert '__myself__: hello' in out
+
+
+class TestPreloadSummary:
+    """SkillServers._preload_summary uses the most recent prior summary."""
+
+    def test_no_prior_dialogues_is_noop(self):
+        servers = _build_servers()
+        d = Dialogue(
+            role=DialogueRole(name='test'),
+            interlocutor=Interlocutor(person_id='alice'),
+        )
+        servers._preload_summary(d)
+        assert d.session_start_index == 0
+        assert d.history == []
+
+    def test_prior_without_summary_skips_silently(self):
+        store = ConversationsHistoryStore()
+        prior = Dialogue(
+            role=DialogueRole(name='test'),
+            interlocutor=Interlocutor(person_id='alice'),
+            state=DialogueState.COMPLETED,
+            ended_at=100.0,
+        )
+        prior.add_utterance('alice', 'hi', 99.0)
+        store.archive(prior)
+
+        servers = _build_servers(conversations_store=store)
+        d = Dialogue(
+            role=DialogueRole(name='test'),
+            interlocutor=Interlocutor(person_id='alice'),
+        )
+        servers._preload_summary(d)
+        assert d.session_start_index == 0
+        assert d.history == []
+
+    def test_prior_with_summary_pre_fills_history(self):
+        store = ConversationsHistoryStore()
+        prior = Dialogue(
+            role=DialogueRole(name='test'),
+            interlocutor=Interlocutor(person_id='alice'),
+            state=DialogueState.COMPLETED,
+            ended_at=100.0,
+        )
+        prior.add_utterance('alice', 'hi', 99.0)
+        prior.summary = 'we said hi'
+        store.archive(prior)
+
+        servers = _build_servers(conversations_store=store)
+        d = Dialogue(
+            role=DialogueRole(name='test'),
+            interlocutor=Interlocutor(person_id='alice'),
+        )
+        servers._preload_summary(d)
+
+        assert d.session_start_index == 2
+        assert len(d.history) == 2
+        assert d.history[0].speaker_id == SUMMARY_SPEAKER_ID
+        assert d.history[0].text == 'we said hi'
+        assert d.history[1].speaker_id == SESSION_BREAK_SPEAKER_ID
+        # New utterances live in the session range.
+        d.add_utterance('alice', 'new', 200.0)
+        assert d.session_utterances[-1].text == 'new'
+
+    def test_uses_most_recent_prior(self):
+        store = ConversationsHistoryStore()
+        for name, ended in (('older', 50.0), ('newer', 200.0)):
+            p = Dialogue(
+                role=DialogueRole(name='test'),
+                interlocutor=Interlocutor(person_id='alice'),
+                state=DialogueState.COMPLETED,
+                ended_at=ended,
+            )
+            p.add_utterance('alice', 'x', ended - 1)
+            p.summary = name
+            store.archive(p)
+
+        servers = _build_servers(conversations_store=store)
+        d = Dialogue(
+            role=DialogueRole(name='test'),
+            interlocutor=Interlocutor(person_id='alice'),
+        )
+        servers._preload_summary(d)
+        assert d.history[0].text == 'newer'
+
+
+class TestFinalizeAndArchive:
+    """Async summarizer fires from _finalize_and_archive."""
+
+    def test_archives_and_invokes_summarizer(self):
+        store = ConversationsHistoryStore()
+        captured = {}
+
+        async def my_summarizer(dialogue, prior_dialogues):
+            captured['prior_count'] = len(prior_dialogues)
+            captured['utt_count'] = len(dialogue.session_utterances)
+            return 'cumulative summary'
+
+        servers = _build_servers(
+            conversations_store=store,
+            summarizer=my_summarizer,
+        )
+
+        d = Dialogue(
+            role=DialogueRole(name='test'),
+            interlocutor=Interlocutor(person_id='alice'),
+            state=DialogueState.ACTIVE,
+        )
+        d.add_utterance('alice', 'hello', 1.0)
+        servers._dialogue_manager.add_dialogue(d)
+
+        # The dialogue is a dataclass — summary is a regular attribute. Spin
+        # until the daemon thread populates it.
+        servers._finalize_and_archive(d)
+
+        # Archive happened synchronously.
+        assert store.history_for(Interlocutor(person_id='alice')) == [d]
+        assert d.state == DialogueState.COMPLETED
+
+        # Summary lands asynchronously — give it up to 2s.
+        deadline = time.monotonic() + 2.0
+        while d.summary is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert d.summary == 'cumulative summary'
+        assert captured['utt_count'] == 1
+        # No prior dialogues for alice before this one.
+        assert captured['prior_count'] == 0
+
+    def test_default_summarizer_runs_when_none_provided(self):
+        store = ConversationsHistoryStore()
+        servers = _build_servers(conversations_store=store)
+
+        d = Dialogue(
+            role=DialogueRole(name='test'),
+            interlocutor=Interlocutor(person_id='alice'),
+            state=DialogueState.ACTIVE,
+        )
+        d.add_utterance('alice', 'hi', 1.0)
+        servers._dialogue_manager.add_dialogue(d)
+
+        servers._finalize_and_archive(d)
+
+        deadline = time.monotonic() + 2.0
+        while d.summary is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert d.summary is not None
+        assert 'alice: hi' in d.summary

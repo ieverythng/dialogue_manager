@@ -23,6 +23,8 @@ from dialogue_manager.dialogue import (
     DialogueState,
     Interlocutor,
     ROBOT_SPEAKER_ID,
+    SESSION_BREAK_SPEAKER_ID,
+    SUMMARY_SPEAKER_ID,
     Utterance,
 )
 import pytest
@@ -426,3 +428,42 @@ class TestDialogueManager:
         manager.add_dialogue(dialogue)
 
         assert manager.get_dialogue_for_interlocutor(interlocutor) is dialogue
+
+
+class TestDialogueSessionUtterances:
+    """Tests for session_start_index / session_utterances pre-fill semantics."""
+
+    def test_session_utterances_default_full(self):
+        """With session_start_index=0, session_utterances == history."""
+        d = Dialogue(role=DialogueRole(name='test'))
+        d.add_utterance('alice', 'hello', 1.0)
+        d.add_utterance(ROBOT_SPEAKER_ID, 'hi', 2.0)
+        assert d.session_utterances == d.history
+
+    def test_session_utterances_skips_prefill(self):
+        """session_utterances excludes pre-filled summary + break entries."""
+        d = Dialogue(role=DialogueRole(name='test'))
+        d.history.append(Utterance(
+            timestamp=0.5, speaker_id=SUMMARY_SPEAKER_ID, text='earlier summary',
+        ))
+        d.history.append(Utterance(
+            timestamp=0.9, speaker_id=SESSION_BREAK_SPEAKER_ID, text='',
+        ))
+        d.session_start_index = len(d.history)
+
+        d.add_utterance('alice', 'hello', 1.0)
+        d.add_utterance(ROBOT_SPEAKER_ID, 'hi', 2.0)
+
+        assert len(d.history) == 4
+        assert len(d.session_utterances) == 2
+        assert d.session_utterances[0].text == 'hello'
+        assert d.session_utterances[1].text == 'hi'
+
+    def test_session_utterances_empty_after_prefill_only(self):
+        """A pre-filled dialogue with no real session utterances is empty."""
+        d = Dialogue(role=DialogueRole(name='test'))
+        d.history.append(Utterance(
+            timestamp=0.5, speaker_id=SUMMARY_SPEAKER_ID, text='earlier',
+        ))
+        d.session_start_index = len(d.history)
+        assert d.session_utterances == []

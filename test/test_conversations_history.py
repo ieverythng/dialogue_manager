@@ -24,6 +24,9 @@ from dialogue_manager.dialogue import (
     DialogueState,
     Interlocutor,
     ROBOT_SPEAKER_ID,
+    SESSION_BREAK_SPEAKER_ID,
+    SUMMARY_SPEAKER_ID,
+    Utterance,
 )
 
 
@@ -261,3 +264,59 @@ class TestPersistence:
         store.save()  # must not raise
         store.load()  # must not raise
         assert store.history_for(Interlocutor(person_id='alice')) == [d]
+
+
+class TestSessionUtterancesPersistence:
+    """Pre-filled summary entries must never leak into archival/save."""
+
+    def test_archive_skips_dialogue_with_no_session_utterances(self):
+        """A dialogue containing only pre-fill (no session) is not archived."""
+        store = ConversationsHistoryStore()
+        d = Dialogue(
+            role=DialogueRole(name='test'),
+            interlocutor=Interlocutor(person_id='alice'),
+            state=DialogueState.COMPLETED,
+        )
+        d.history.append(Utterance(
+            timestamp=0.5, speaker_id=SUMMARY_SPEAKER_ID, text='prior',
+        ))
+        d.session_start_index = len(d.history)
+
+        store.archive(d)
+
+        assert store.history_for(Interlocutor(person_id='alice')) == []
+
+    def test_save_serializes_session_utterances_only(self, tmp_path):
+        """Persisted JSON contains only the current session's utterances."""
+        store = ConversationsHistoryStore(storage_dir=tmp_path)
+        d = Dialogue(
+            role=DialogueRole(name='test'),
+            interlocutor=Interlocutor(person_id='alice'),
+            state=DialogueState.COMPLETED,
+        )
+        # Pre-fill: should NOT make it to disk.
+        d.history.append(Utterance(
+            timestamp=0.1, speaker_id=SUMMARY_SPEAKER_ID, text='earlier',
+        ))
+        d.history.append(Utterance(
+            timestamp=0.2, speaker_id=SESSION_BREAK_SPEAKER_ID, text='',
+        ))
+        d.session_start_index = len(d.history)
+        # Real session content: must land on disk.
+        d.add_utterance('alice', 'hello', 1.0)
+        d.add_utterance(ROBOT_SPEAKER_ID, 'hi', 2.0)
+        store.archive(d)
+        store.save()
+
+        import json
+        path = tmp_path / 'person' / 'alice.json'
+        assert path.exists()
+        payload = json.loads(path.read_text())
+        assert len(payload) == 1
+        utts = payload[0]['history']
+        assert len(utts) == 2
+        assert utts[0]['text'] == 'hello'
+        assert utts[1]['text'] == 'hi'
+        speaker_ids = {u['speaker_id'] for u in utts}
+        assert SUMMARY_SPEAKER_ID not in speaker_ids
+        assert SESSION_BREAK_SPEAKER_ID not in speaker_ids

@@ -27,11 +27,17 @@ from std_msgs.msg import Bool, String
 
 from .chatbot_client import ChatbotClient
 from .conversations_history import ConversationsHistoryStore
-from .dialogue import DialogueManager
+from .dialogue import DialogueManager, DialogueState
 from .markup import ActionLibrary, ExpressionExecutor
+from .say_client import SayClient
 from .skill_servers import SkillServers
 from .speech_handler import SpeechHandler
-from .tts_client import TTSClient
+
+
+# How often the in-memory conversation store is flushed to disk while the
+# node is in the active state. Kept as a module constant (not a ROS param) to
+# minimize configuration surface.
+CONVERSATIONS_PERSIST_INTERVAL_SEC = 30.0
 
 
 class DialogueManagerNode(LifecycleNode):
@@ -39,7 +45,7 @@ class DialogueManagerNode(LifecycleNode):
     Dialogue Manager ROS2 Lifecycle Node.
 
     Implements the chat, ask, and say skills for human-robot dialogue.
-    Orchestrates chatbot, TTS, and speech input handling through
+    Orchestrates chatbot, Say sub-skill, and speech input handling through
     composition of specialized handler classes.
     """
 
@@ -55,7 +61,7 @@ class DialogueManagerNode(LifecycleNode):
         self._conversations_store: ConversationsHistoryStore | None = None
 
         # Handlers (created in on_configure)
-        self._tts_client: TTSClient | None = None
+        self._say_client: SayClient | None = None
         self._chatbot_client: ChatbotClient | None = None
         self._speech_handler: SpeechHandler | None = None
         self._skill_servers: SkillServers | None = None
@@ -71,6 +77,7 @@ class DialogueManagerNode(LifecycleNode):
 
         # Timers
         self._diag_timer = None
+        self._persist_timer = None
 
         self._declare_parameters()
         self.get_logger().info('Dialogue Manager node created, awaiting configuration.')
@@ -80,6 +87,12 @@ class DialogueManagerNode(LifecycleNode):
         self.declare_parameter(
             'chatbot', 'chatbot',
             ParameterDescriptor(description='Chatbot node FQN for action/service prefix')
+        )
+        self.declare_parameter(
+            'say_action', '/tts/say',
+            ParameterDescriptor(
+                description='Action name of the Say sub-skill server (TTS frontend)'
+            )
         )
         self.declare_parameter(
             'enable_default_chat', False,
@@ -167,16 +180,21 @@ class DialogueManagerNode(LifecycleNode):
         self._intents_pub = self.create_publisher(Intent, '/intents', 10)
         self._diag_pub = self.create_publisher(DiagnosticArray, '/diagnostics', 10)
 
-        # Create TTS client
-        self._tts_client = TTSClient(
+        # Create Say sub-skill client
+        self._say_client = SayClient(
             node=self,
             dialogue_manager=self._dialogue_manager,
             closed_captions_pub=self._closed_captions_pub,
             robot_speech_pub=self._robot_speech_pub,
             callback_group=self._callback_group
         )
-        self._tts_client.create_client()
-        self.get_logger().debug('[CONFIGURE] TTS client created')
+        say_action = (
+            self.get_parameter('say_action').get_parameter_value().string_value
+        )
+        self._say_client.create_client(say_action)
+        self.get_logger().debug(
+            f'[CONFIGURE] Say sub-skill client created (action="{say_action}")'
+        )
 
         # Create action library and expression executor
         pkg_share = get_package_share_directory('dialogue_manager')
@@ -210,7 +228,7 @@ class DialogueManagerNode(LifecycleNode):
 
         self._expression_executor = ExpressionExecutor(
             node=self,
-            tts_client=self._tts_client,
+            say_client=self._say_client,
             action_library=self._action_library,
             expression_timeout=expr_timeout,
         )
@@ -222,7 +240,7 @@ class DialogueManagerNode(LifecycleNode):
             self._chatbot_client = ChatbotClient(
                 node=self,
                 dialogue_manager=self._dialogue_manager,
-                tts_client=self._tts_client,
+                say_client=self._say_client,
                 expression_executor=self._expression_executor,
                 intents_pub=self._intents_pub,
                 waiting_chatbot_pub=self._waiting_chatbot_pub,
@@ -249,7 +267,7 @@ class DialogueManagerNode(LifecycleNode):
             node=self,
             dialogue_manager=self._dialogue_manager,
             chatbot_client=self._chatbot_client,
-            tts_client=self._tts_client,
+            say_client=self._say_client,
             conversations_store=self._conversations_store,
             group_resolver=self._resolve_group_members,
             expression_executor=self._expression_executor,
@@ -275,6 +293,17 @@ class DialogueManagerNode(LifecycleNode):
         # Subscribe to voices
         self._speech_handler.subscribe_to_voices()
 
+        # Start periodic conversation-history persistence.
+        if self._conversations_store is not None and self._persist_timer is None:
+            self._persist_timer = self.create_timer(
+                CONVERSATIONS_PERSIST_INTERVAL_SEC,
+                self._persist_conversations,
+            )
+            self.get_logger().debug(
+                f'[ACTIVATE] Persistence timer started '
+                f'(interval={CONVERSATIONS_PERSIST_INTERVAL_SEC}s)'
+            )
+
         # Start default chat if enabled
         if self.get_parameter('enable_default_chat').get_parameter_value().bool_value:
             if self._chatbot_client:
@@ -299,11 +328,44 @@ class DialogueManagerNode(LifecycleNode):
         # Unsubscribe from voices
         self._speech_handler.unsubscribe_all()
 
-        # Cancel active dialogues
+        # Stop the persistence timer.
+        if self._persist_timer is not None:
+            self.destroy_timer(self._persist_timer)
+            self._persist_timer = None
+
+        # Finalize (and trigger summarization + archival of) any active
+        # dialogues before clearing them, so their history isn't lost.
+        for dialogue in list(self._dialogue_manager.active_dialogues.values()):
+            if dialogue.state == DialogueState.COMPLETED:
+                continue
+            try:
+                self._skill_servers._finalize_and_archive(dialogue)
+            except Exception as exc:
+                self.get_logger().warn(
+                    f'[DEACTIVATE] Failed to finalize dialogue '
+                    f'{dialogue.dialogue_id}: {exc}'
+                )
         self._dialogue_manager.clear_all()
+
+        # One immediate flush to capture utterances that arrived since the
+        # last periodic tick. (Summaries that are still running may land
+        # after this and will be picked up on the next activation's first
+        # tick, or by the on_shutdown bulk save.)
+        self._persist_conversations()
 
         self.get_logger().info('Dialogue Manager deactivated.')
         return super().on_deactivate(state)
+
+    def _persist_conversations(self) -> None:
+        """Persist the in-memory conversation store to disk."""
+        if self._conversations_store is None:
+            return
+        try:
+            self._conversations_store.save()
+        except Exception as exc:
+            self.get_logger().warn(
+                f'[PERSIST] Failed to persist conversations: {exc}'
+            )
 
     def on_shutdown(self, state: State) -> TransitionCallbackReturn:
         """Shutdown the node: destroy all handlers."""
@@ -311,6 +373,9 @@ class DialogueManagerNode(LifecycleNode):
 
         if self._diag_timer:
             self.destroy_timer(self._diag_timer)
+        if self._persist_timer is not None:
+            self.destroy_timer(self._persist_timer)
+            self._persist_timer = None
 
         if self._conversations_store is not None:
             try:
@@ -327,8 +392,8 @@ class DialogueManagerNode(LifecycleNode):
             self._skill_servers.destroy()
         if self._action_library:
             self._action_library.destroy()
-        if self._tts_client:
-            self._tts_client.destroy()
+        if self._say_client:
+            self._say_client.destroy()
         if self._chatbot_client:
             self._chatbot_client.destroy()
 

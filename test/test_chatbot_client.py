@@ -50,21 +50,21 @@ class TestChatbotClientInit:
         """Client stores all provided dependencies."""
         mock_node = MagicMock()
         mock_dialogue_manager = MagicMock()
-        mock_tts_client = MagicMock()
+        mock_say_client = MagicMock()
         mock_intents_pub = MagicMock()
         mock_waiting_pub = MagicMock()
 
         client = ChatbotClient(
             node=mock_node,
             dialogue_manager=mock_dialogue_manager,
-            tts_client=mock_tts_client,
+            say_client=mock_say_client,
             intents_pub=mock_intents_pub,
             waiting_chatbot_pub=mock_waiting_pub
         )
 
         assert client._node is mock_node
         assert client._dialogue_manager is mock_dialogue_manager
-        assert client._tts_client is mock_tts_client
+        assert client._say_client is mock_say_client
         assert client._intents_pub is mock_intents_pub
         assert client._waiting_chatbot_pub is mock_waiting_pub
 
@@ -73,7 +73,7 @@ class TestChatbotClientInit:
         client = ChatbotClient(
             node=MagicMock(),
             dialogue_manager=MagicMock(),
-            tts_client=MagicMock(),
+            say_client=MagicMock(),
             intents_pub=MagicMock(),
             waiting_chatbot_pub=MagicMock()
         )
@@ -85,7 +85,7 @@ class TestChatbotClientInit:
         client = ChatbotClient(
             node=MagicMock(),
             dialogue_manager=MagicMock(),
-            tts_client=MagicMock(),
+            say_client=MagicMock(),
             intents_pub=MagicMock(),
             waiting_chatbot_pub=MagicMock()
         )
@@ -102,7 +102,7 @@ class TestChatbotClientCreateClients:
         client = ChatbotClient(
             node=mock_node,
             dialogue_manager=MagicMock(),
-            tts_client=MagicMock(),
+            say_client=MagicMock(),
             intents_pub=MagicMock(),
             waiting_chatbot_pub=MagicMock()
         )
@@ -120,7 +120,7 @@ class TestChatbotClientCreateClients:
         client = ChatbotClient(
             node=mock_node,
             dialogue_manager=MagicMock(),
-            tts_client=MagicMock(),
+            say_client=MagicMock(),
             intents_pub=MagicMock(),
             waiting_chatbot_pub=MagicMock()
         )
@@ -139,14 +139,14 @@ class TestChatbotClientSendInput:
         """Set up test fixtures."""
         self.mock_node = MagicMock()
         self.mock_dialogue_manager = DialogueManager()
-        self.mock_tts_client = MagicMock()
+        self.mock_say_client = MagicMock()
         self.mock_intents_pub = MagicMock()
         self.mock_waiting_pub = MagicMock()
 
         self.client = ChatbotClient(
             node=self.mock_node,
             dialogue_manager=self.mock_dialogue_manager,
-            tts_client=self.mock_tts_client,
+            say_client=self.mock_say_client,
             intents_pub=self.mock_intents_pub,
             waiting_chatbot_pub=self.mock_waiting_pub
         )
@@ -224,7 +224,7 @@ class TestChatbotClientDestroy:
         client = ChatbotClient(
             node=mock_node,
             dialogue_manager=MagicMock(),
-            tts_client=MagicMock(),
+            say_client=MagicMock(),
             intents_pub=MagicMock(),
             waiting_chatbot_pub=MagicMock()
         )
@@ -248,7 +248,7 @@ class TestChatbotClientIsAvailable:
         client = ChatbotClient(
             node=MagicMock(),
             dialogue_manager=MagicMock(),
-            tts_client=MagicMock(),
+            say_client=MagicMock(),
             intents_pub=MagicMock(),
             waiting_chatbot_pub=MagicMock()
         )
@@ -260,7 +260,7 @@ class TestChatbotClientIsAvailable:
         client = ChatbotClient(
             node=MagicMock(),
             dialogue_manager=MagicMock(),
-            tts_client=MagicMock(),
+            say_client=MagicMock(),
             intents_pub=MagicMock(),
             waiting_chatbot_pub=MagicMock()
         )
@@ -276,7 +276,7 @@ class TestChatbotClientIsAvailable:
         client = ChatbotClient(
             node=MagicMock(),
             dialogue_manager=MagicMock(),
-            tts_client=MagicMock(),
+            say_client=MagicMock(),
             intents_pub=MagicMock(),
             waiting_chatbot_pub=MagicMock()
         )

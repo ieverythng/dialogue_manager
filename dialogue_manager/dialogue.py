@@ -24,6 +24,14 @@ from chatbot_msgs.msg import DialogueRole
 # Speaker ID used in `Utterance.speaker_id` to denote the robot itself.
 ROBOT_SPEAKER_ID = '__myself__'
 
+# Speaker ID used to mark a pre-filled session summary (one entry carrying the
+# summary text of a prior dialogue). Excluded from `session_utterances`.
+SUMMARY_SPEAKER_ID = '__summary__'
+
+# Speaker ID used as a session-break marker between pre-filled prior content and
+# the current session's utterances. Excluded from `session_utterances`.
+SESSION_BREAK_SPEAKER_ID = '__session_break__'
+
 # Special role name used to wrap one-shot Say.action utterances recorded against
 # a person/group when no chat dialogue is active for that interlocutor.
 SAY_ROLE_NAME = '__say__'
@@ -107,7 +115,12 @@ class Dialogue:
     started_at: float | None = None  # Set on first utterance
     ended_at: float | None = None    # Set when state -> COMPLETED
     history: list[Utterance] = field(default_factory=list)
-    summary: str | None = None  # Cached LLM summary; None ⇒ stale or not generated
+    # Index into `history` at which the *current* session's utterances start.
+    # Anything before this index is pre-filled context (summaries + session-
+    # break markers) and is excluded from `session_utterances`, archival, and
+    # persistence so it cannot bleed into the next session.
+    session_start_index: int = 0
+    summary: str | None = None  # Cached LLM summary; None ⇒ not yet generated
     summary_generated_at: float | None = None
     chatbot_goal_id: UUID | None = None  # The chatbot action goal UUID
     goal_handle: object | None = None  # The skill action goal handle
@@ -116,6 +129,11 @@ class Dialogue:
         """Validate priority range."""
         if not 0 <= self.priority <= 255:
             raise ValueError(f'Priority must be 0-255, got {self.priority}')
+
+    @property
+    def session_utterances(self) -> list[Utterance]:
+        """Return only this session's utterances (post-preload, real content)."""
+        return self.history[self.session_start_index:]
 
     def add_utterance(
         self, speaker_id: str, text: str, timestamp: float

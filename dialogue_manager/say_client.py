@@ -12,28 +12,32 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""TTS client for the Dialogue Manager."""
+"""Say sub-skill client for the Dialogue Manager."""
 
 from collections.abc import Callable
 import threading
 
+from communication_skills.action import Say
 from hri_actions_msgs.msg import ClosedCaption
 from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from rclpy.publisher import Publisher
 from std_msgs.msg import String
-from tts_msgs.action import TTS
 
 from .dialogue import DialogueManager
 
 
-class TTSClient:
-    """
-    Handles text-to-speech interactions.
+CALLER_NAME = 'dialogue_manager'
 
-    Manages the TTS action client, publishes closed captions for robot speech,
-    and forwards word-by-word feedback.
+
+class SayClient:
+    """
+    Client for the Say sub-skill action server.
+
+    Sends utterances to an external Say action server (acting as a frontend
+    to the TTS engine), publishes closed captions for robot speech, and
+    forwards per-word feedback received via Feedback.data_str.
     """
 
     def __init__(
@@ -44,76 +48,81 @@ class TTSClient:
         robot_speech_pub: Publisher,
         callback_group: ReentrantCallbackGroup | None = None
     ):
-        """Initialize the TTS client."""
+        """Initialize the Say client."""
         self._node = node
         self._dialogue_manager = dialogue_manager
         self._closed_captions_pub = closed_captions_pub
         self._robot_speech_pub = robot_speech_pub
         self._callback_group = callback_group
 
-        self._tts_client: ActionClient | None = None
+        self._say_client: ActionClient | None = None
         self._on_complete_callback: Callable[[], None] | None = None
 
-    def create_client(self, action_name: str = 'tts_engine/tts') -> None:
-        """Create the TTS action client."""
-        self._tts_client = ActionClient(
+    def create_client(self, action_name: str = '/tts/say') -> None:
+        """Create the Say action client."""
+        self._say_client = ActionClient(
             self._node,
-            TTS,
+            Say,
             action_name,
             callback_group=self._callback_group
         )
-        self._node.get_logger().info(f'[TTS] Created action client: {action_name}')
+        self._node.get_logger().info(f'[SAY] Created action client: {action_name}')
 
     def destroy(self) -> None:
-        """Destroy the TTS action client."""
-        if self._tts_client:
-            self._tts_client.destroy()
-            self._tts_client = None
+        """Destroy the Say action client."""
+        if self._say_client:
+            self._say_client.destroy()
+            self._say_client = None
 
     def is_available(self, timeout_sec: float = 1.0) -> bool:
-        """Check if TTS server is available."""
-        if not self._tts_client:
+        """Check if Say server is available."""
+        if not self._say_client:
             return False
-        return self._tts_client.wait_for_server(timeout_sec=timeout_sec)
+        return self._say_client.wait_for_server(timeout_sec=timeout_sec)
 
     def speak(
         self,
         text: str,
         priority: int = 128,
-        on_complete: Callable[[], None] | None = None
+        person_id: str = '',
+        group_id: str = '',
+        on_complete: Callable[[], None] | None = None,
     ) -> bool:
-        """Send text to TTS engine."""
-        if not self._tts_client:
-            self._node.get_logger().warn('[TTS] No TTS client available')
+        """Send text to the Say sub-skill (markup-stripped plain text)."""
+        if not self._say_client:
+            self._node.get_logger().warn('[SAY] No Say client available')
             return False
 
         log_text = f'"{text[:80]}..."' if len(text) > 80 else f'"{text}"'
         self._node.get_logger().info(
-            f'[TTS] Speaking text (priority={priority}): {log_text}'
+            f'[SAY] Sending text (priority={priority}): {log_text}'
         )
 
         self._dialogue_manager.set_expression_priority(priority)
         self._on_complete_callback = on_complete
 
-        goal = TTS.Goal()
+        goal = Say.Goal()
+        goal.meta.caller = CALLER_NAME
+        goal.meta.priority = priority
+        goal.person_id = person_id
+        goal.group_id = group_id
         goal.input = text
 
-        if self._tts_client.wait_for_server(timeout_sec=1.0):
-            self._node.get_logger().debug('[TTS] Server available, sending goal')
-            send_future = self._tts_client.send_goal_async(
+        if self._say_client.wait_for_server(timeout_sec=1.0):
+            self._node.get_logger().debug('[SAY] Server available, sending goal')
+            send_future = self._say_client.send_goal_async(
                 goal, feedback_callback=self._on_feedback
             )
             send_future.add_done_callback(self._on_goal_response)
 
-            # Publish closed caption
             caption = ClosedCaption()
             caption.speaker_id = ClosedCaption.SPEAKER_ID_SYSTEM
             caption.text = text
             self._closed_captions_pub.publish(caption)
-            self._node.get_logger().debug('[TTS] Published robot closed caption')
+            self._node.get_logger().debug('[SAY] Published robot closed caption')
             return True
         else:
-            self._node.get_logger().warn('[TTS] Server not available (timeout after 1s)')
+            self._node.get_logger().warn('[SAY] Server not available (timeout after 1s)')
             self._dialogue_manager.clear_expression_priority()
             return False
 
@@ -122,11 +131,19 @@ class TTSClient:
         text: str,
         priority: int = 128,
         cancel_event: threading.Event | None = None,
+        person_id: str = '',
+        group_id: str = '',
     ) -> bool:
-        """Send text to TTS and block until complete or cancelled."""
+        """Send text to Say and block until complete or cancelled."""
         done_event = threading.Event()
 
-        success = self.speak(text, priority, on_complete=done_event.set)
+        success = self.speak(
+            text,
+            priority=priority,
+            person_id=person_id,
+            group_id=group_id,
+            on_complete=done_event.set,
+        )
         if not success:
             return False
 
@@ -138,35 +155,37 @@ class TTSClient:
         return True
 
     def _on_goal_response(self, future) -> None:
-        """Handle TTS goal acceptance."""
+        """Handle Say goal acceptance."""
         goal_handle = future.result()
         if not goal_handle or not goal_handle.accepted:
-            self._node.get_logger().warn('[TTS] Goal rejected')
+            self._node.get_logger().warn('[SAY] Goal rejected')
             self._dialogue_manager.clear_expression_priority()
             self._invoke_complete_callback()
             return
 
-        self._node.get_logger().debug('[TTS] Goal accepted, waiting for result')
+        self._node.get_logger().debug('[SAY] Goal accepted, waiting for result')
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(self._on_result)
 
     def _on_feedback(self, feedback_msg) -> None:
-        """Forward TTS feedback to robot_speech topic."""
-        word = feedback_msg.feedback.word
+        """Forward Say feedback (per-word in data_str) to robot_speech topic."""
+        word = feedback_msg.feedback.feedback.data_str
         if word:
             self._robot_speech_pub.publish(String(data=word))
 
     def _on_result(self, future) -> None:
-        """Handle TTS completion."""
+        """Handle Say completion."""
         self._dialogue_manager.clear_expression_priority()
         try:
             result = future.result()
-            if result.result.error_msg:
-                self._node.get_logger().warn(f'[TTS] Error: {result.result.error_msg}')
+            if result.result.result.error_msg:
+                self._node.get_logger().warn(
+                    f'[SAY] Error: {result.result.result.error_msg}'
+                )
             else:
-                self._node.get_logger().debug('[TTS] Completed successfully')
+                self._node.get_logger().debug('[SAY] Completed successfully')
         except Exception as e:
-            self._node.get_logger().error(f'[TTS] Failed: {e}')
+            self._node.get_logger().error(f'[SAY] Failed: {e}')
         finally:
             self._invoke_complete_callback()
 
@@ -176,6 +195,6 @@ class TTSClient:
             try:
                 self._on_complete_callback()
             except Exception as e:
-                self._node.get_logger().error(f'[TTS] Complete callback failed: {e}')
+                self._node.get_logger().error(f'[SAY] Complete callback failed: {e}')
             finally:
                 self._on_complete_callback = None

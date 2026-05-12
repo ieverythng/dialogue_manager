@@ -26,7 +26,7 @@ import rclpy
 from rclpy.action import ActionClient, ActionServer, GoalResponse
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from tts_msgs.action import TTS
+from rclpy.qos import DurabilityPolicy, QoSProfile
 
 
 # =============================================================================
@@ -40,8 +40,11 @@ class MockASRNode(Node):
     def __init__(self):
         """Initialize the mock ASR node."""
         super().__init__('mock_asr')
+        voices_qos = QoSProfile(
+            depth=10, durability=DurabilityPolicy.TRANSIENT_LOCAL
+        )
         self._voices_pub = self.create_publisher(
-            IdsList, '/humans/voices/tracked', 10
+            IdsList, '/humans/voices/tracked', voices_qos
         )
         self._speech_pubs = {}
 
@@ -70,33 +73,33 @@ class MockASRNode(Node):
         self._speech_pubs[voice_id].publish(msg)
 
 
-class MockTTSNode(Node):
-    """Mock TTS engine that provides TTS action server."""
+class MockSayNode(Node):
+    """Mock Say sub-skill server (a TTS-engine frontend)."""
 
-    def __init__(self):
-        """Initialize the mock TTS."""
-        super().__init__('mock_tts')
+    def __init__(self, action_name: str = '/tts/say'):
+        """Initialize the mock Say server."""
+        super().__init__('mock_say')
         self._spoken_texts = []
 
-        self._tts_server = ActionServer(
+        self._say_server = ActionServer(
             self,
-            TTS,
-            'tts_engine/tts',
-            execute_callback=self._execute_tts,
+            Say,
+            action_name,
+            execute_callback=self._execute_say,
             goal_callback=self._goal_callback
         )
 
     def _goal_callback(self, goal_request):
-        """Accept all TTS goals."""
+        """Accept all Say goals."""
         return GoalResponse.ACCEPT
 
-    def _execute_tts(self, goal_handle):
-        """Execute TTS - simulate speaking."""
+    def _execute_say(self, goal_handle):
+        """Execute Say - simulate speaking."""
         text = goal_handle.request.input
         self._spoken_texts.append(text)
 
         goal_handle.succeed()
-        return TTS.Result()
+        return Say.Result()
 
     def get_spoken_texts(self) -> list:
         """Return list of spoken texts."""
@@ -104,7 +107,7 @@ class MockTTSNode(Node):
 
     def destroy(self) -> None:
         """Clean up the action server before destroying the node."""
-        self._tts_server.destroy()
+        self._say_server.destroy()
 
 
 class MockChatbotNode(Node):
@@ -328,24 +331,24 @@ def rclpy_context():
 # =============================================================================
 
 
-class TestMockTTSNode:
-    """Tests for MockTTSNode in isolation."""
+class TestMockSayNode:
+    """Tests for MockSayNode in isolation."""
 
-    def test_mock_tts_accepts_goals(self, rclpy_context):
-        """Node MockTTSNode accepts TTS goals."""
-        mock_tts = MockTTSNode()
+    def test_mock_say_accepts_goals(self, rclpy_context):
+        """Node MockSayNode accepts Say goals."""
+        mock_say = MockSayNode()
         client_node = Node('test_client')
-        client = ActionClient(client_node, TTS, 'tts_engine/tts')
+        client = ActionClient(client_node, Say, '/tts/say')
 
         executor = MultiThreadedExecutor()
-        executor.add_node(mock_tts)
+        executor.add_node(mock_say)
         executor.add_node(client_node)
 
         # Wait for server
         assert client.wait_for_server(timeout_sec=2.0)
 
         # Send goal
-        goal = TTS.Goal()
+        goal = Say.Goal()
         goal.input = 'Test speech'
         future = client.send_goal_async(goal)
 
@@ -364,11 +367,11 @@ class TestMockTTSNode:
             executor.spin_once(timeout_sec=0.1)
 
         assert result_future.done()
-        assert 'Test speech' in mock_tts.get_spoken_texts()
+        assert 'Test speech' in mock_say.get_spoken_texts()
 
         executor.shutdown()
         client_node.destroy_node()
-        mock_tts.destroy_node()
+        mock_say.destroy_node()
 
 
 class TestMockASRNode:
@@ -483,16 +486,16 @@ class TestIntentCollector:
 
 
 class TestDialogueManagerSayAction:
-    """Tests for Say action through DialogueManagerNode."""
+    """Tests for the /skill/say action through DialogueManagerNode."""
 
-    def test_say_action_triggers_tts(self, rclpy_context):
-        """Say action sends text to TTS engine."""
+    def test_say_action_triggers_say_sub_skill(self, rclpy_context):
+        """The /skill/say action forwards text to the Say sub-skill."""
         from dialogue_manager.manager_node import DialogueManagerNode
         from lifecycle_msgs.msg import State
 
         # Create nodes
         dm_node = DialogueManagerNode()
-        mock_tts = MockTTSNode()
+        mock_say = MockSayNode()
         client_node = Node('say_test_client')
         say_client = ActionClient(client_node, Say, '/skill/say')
 
@@ -503,7 +506,7 @@ class TestDialogueManagerSayAction:
 
         executor = MultiThreadedExecutor()
         executor.add_node(dm_node)
-        executor.add_node(mock_tts)
+        executor.add_node(mock_say)
         executor.add_node(client_node)
 
         # Wait for server and send goal
@@ -523,17 +526,17 @@ class TestDialogueManagerSayAction:
         goal_handle = future.result()
         assert goal_handle.accepted
 
-        # Wait for TTS to receive
+        # Wait for Say sub-skill to receive
         result_future = goal_handle.get_result_async()
         start = time.time()
         while not result_future.done() and time.time() - start < 5.0:
             executor.spin_once(timeout_sec=0.1)
 
-        assert 'Integration test speech' in mock_tts.get_spoken_texts()
+        assert 'Integration test speech' in mock_say.get_spoken_texts()
 
         executor.shutdown()
         dm_node.destroy_node()
-        mock_tts.destroy_node()
+        mock_say.destroy_node()
         client_node.destroy_node()
 
 
@@ -636,7 +639,7 @@ class TestFullSpeechFlow:
         # Create nodes
         dm_node = DialogueManagerNode()
         mock_chatbot = MockChatbotNode(response_text='Hello from chatbot!')
-        mock_tts = MockTTSNode()
+        mock_say = MockSayNode()
         mock_asr = MockASRNode()
         chat_client = ChatActionClient()
         collector = IntentCollector()
@@ -649,7 +652,7 @@ class TestFullSpeechFlow:
         executor = MultiThreadedExecutor()
         executor.add_node(dm_node)
         executor.add_node(mock_chatbot)
-        executor.add_node(mock_tts)
+        executor.add_node(mock_say)
         executor.add_node(mock_asr)
         executor.add_node(chat_client)
         executor.add_node(collector)
@@ -688,7 +691,7 @@ class TestFullSpeechFlow:
         assert 'Hello chatbot!' in received
 
         # Verify TTS spoke the response
-        spoken = mock_tts.get_spoken_texts()
+        spoken = mock_say.get_spoken_texts()
         assert 'Hello from chatbot!' in spoken
 
         # Cleanup
@@ -703,8 +706,8 @@ class TestFullSpeechFlow:
         dm_node.destroy_node()
         mock_chatbot.destroy()
         mock_chatbot.destroy_node()
-        mock_tts.destroy()
-        mock_tts.destroy_node()
+        mock_say.destroy()
+        mock_say.destroy_node()
         mock_asr.destroy_node()
         chat_client.destroy_node()
         collector.destroy_node()
@@ -726,7 +729,7 @@ class TestFullSpeechFlow:
             response_text='Intent response',
             intents=[test_intent]
         )
-        mock_tts = MockTTSNode()
+        mock_say = MockSayNode()
         mock_asr = MockASRNode()
         chat_client = ChatActionClient()
         collector = IntentCollector()
@@ -739,7 +742,7 @@ class TestFullSpeechFlow:
         executor = MultiThreadedExecutor()
         executor.add_node(dm_node)
         executor.add_node(mock_chatbot)
-        executor.add_node(mock_tts)
+        executor.add_node(mock_say)
         executor.add_node(mock_asr)
         executor.add_node(chat_client)
         executor.add_node(collector)
@@ -783,8 +786,8 @@ class TestFullSpeechFlow:
         dm_node.destroy_node()
         mock_chatbot.destroy()
         mock_chatbot.destroy_node()
-        mock_tts.destroy()
-        mock_tts.destroy_node()
+        mock_say.destroy()
+        mock_say.destroy_node()
         mock_asr.destroy_node()
         chat_client.destroy_node()
         collector.destroy_node()

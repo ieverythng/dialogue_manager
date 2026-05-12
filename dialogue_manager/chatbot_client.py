@@ -35,7 +35,7 @@ from .dialogue import (
     ROBOT_SPEAKER_ID,
 )
 from .markup.executor import ExpressionExecutor
-from .tts_client import TTSClient
+from .say_client import SayClient
 
 
 # Per chatbot_msgs/srv/DialogueInteraction.srv
@@ -60,7 +60,7 @@ class ChatbotClient:
         self,
         node: Node,
         dialogue_manager: DialogueManager,
-        tts_client: TTSClient,
+        say_client: SayClient,
         expression_executor: ExpressionExecutor | None = None,
         intents_pub: Publisher | None = None,
         waiting_chatbot_pub: Publisher | None = None,
@@ -69,7 +69,7 @@ class ChatbotClient:
         """Initialize the chatbot client."""
         self._node = node
         self._dialogue_manager = dialogue_manager
-        self._tts_client = tts_client
+        self._say_client = say_client
         self._expression_executor = expression_executor
         self._intents_pub = intents_pub
         self._waiting_chatbot_pub = waiting_chatbot_pub
@@ -201,14 +201,9 @@ class ChatbotClient:
             f'user_id="{user_id}", text="{text}"'
         )
 
-        # Record the user-attributable utterance in the dialogue history.
-        # __system__ messages are not utterances. Empty inputs are generation
-        # triggers (used by Chat with initiate=True), not real content.
-        if text and user_id != SYSTEM_USER_ID:
-            speaker = (
-                ROBOT_SPEAKER_ID if user_id == ASSISTANT_USER_ID else user_id
-            )
-            dialogue.add_utterance(speaker, text, self._now())
+        # NOTE: user-attributable utterances are recorded by the SpeechHandler
+        # before send_input is called, so the dialogue history stays coherent
+        # in chatbot-less mode too. Do not re-record here.
 
         # Set waiting state
         self._waiting_for_response = True
@@ -287,11 +282,32 @@ class ChatbotClient:
 
         # Speak response (with markup processing if executor available)
         if response.response:
-            self._node.get_logger().info('[CHATBOT RESPONSE] Speaking via TTS')
+            self._node.get_logger().info(
+                '[CHATBOT RESPONSE] Speaking via Say sub-skill'
+            )
+            person_id = (
+                dialogue.interlocutor.person_id
+                if dialogue and dialogue.interlocutor else ''
+            )
+            group_id = (
+                dialogue.interlocutor.group_id
+                if dialogue and dialogue.interlocutor else ''
+            )
+            priority = dialogue.priority if dialogue else 128
             if self._expression_executor:
-                self._expression_executor.execute_text(response.response)
+                self._expression_executor.execute_text(
+                    response.response,
+                    priority=priority,
+                    person_id=person_id,
+                    group_id=group_id,
+                )
             else:
-                self._tts_client.speak(response.response)
+                self._say_client.speak(
+                    response.response,
+                    priority=priority,
+                    person_id=person_id,
+                    group_id=group_id,
+                )
         else:
             self._node.get_logger().debug('[CHATBOT RESPONSE] No text to speak')
 

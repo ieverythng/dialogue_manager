@@ -14,7 +14,8 @@
 
 """Skill action servers for the Dialogue Manager."""
 
-from collections.abc import Callable
+import asyncio
+from collections.abc import Awaitable, Callable
 import json
 import threading
 import time
@@ -36,13 +37,40 @@ from .dialogue import (
     Interlocutor,
     ROBOT_SPEAKER_ID,
     SAY_ROLE_NAME,
+    SESSION_BREAK_SPEAKER_ID,
+    SUMMARY_SPEAKER_ID,
+    Utterance,
 )
 from .markup.executor import ExpressionExecutor
-from .tts_client import TTSClient
+from .say_client import SayClient
+
+
+# When Ask is used without a chatbot, this is how long we wait for the next
+# user utterance from the addressed interlocutor before returning empty.
+ASK_TIMEOUT_SEC = 5.0
 
 
 GroupResolver = Callable[[str], list[str]]
 """Callable mapping a group ID to its member person IDs (may return [])."""
+
+Summarizer = Callable[[Dialogue, list[Dialogue]], Awaitable[str]]
+"""Async callable that produces a summary text for a finished dialogue.
+
+Called at session end with the current dialogue and the list of prior
+archived dialogues for the same interlocutor (chronological, oldest first).
+Implementations are free to consult the prior dialogues to produce a
+cumulative summary, or to ignore them.
+"""
+
+
+async def default_summarizer(
+    dialogue: Dialogue, prior_dialogues: list[Dialogue]
+) -> str:
+    """Trivial summarizer: render the session's utterances as plain text."""
+    lines = []
+    for utt in dialogue.session_utterances:
+        lines.append(f'{utt.speaker_id}: {utt.text}')
+    return '\n'.join(lines)
 
 
 class SkillServers:
@@ -56,26 +84,26 @@ class SkillServers:
         self,
         node: Node,
         dialogue_manager: DialogueManager,
-        chatbot_client: ChatbotClient,
-        tts_client: TTSClient,
+        chatbot_client: ChatbotClient | None,
+        say_client: SayClient,
         conversations_store: ConversationsHistoryStore,
         group_resolver: GroupResolver,
         expression_executor: ExpressionExecutor | None = None,
         closed_captions_pub: Publisher | None = None,
         callback_group: ReentrantCallbackGroup | None = None,
-        context_summarizer: Callable[[Dialogue], str] | None = None,
+        summarizer: Summarizer | None = None,
     ):
         """Initialize skill servers."""
         self._node = node
         self._dialogue_manager = dialogue_manager
         self._chatbot_client = chatbot_client
-        self._tts_client = tts_client
+        self._say_client = say_client
         self._conversations_store = conversations_store
         self._group_resolver = group_resolver
         self._expression_executor = expression_executor
         self._closed_captions_pub = closed_captions_pub
         self._callback_group = callback_group
-        self._context_summarizer = context_summarizer
+        self._summarizer: Summarizer = summarizer or default_summarizer
 
         self._chat_server: ActionServer | None = None
         self._ask_server: ActionServer | None = None
@@ -96,7 +124,13 @@ class SkillServers:
             return []
 
     def _finalize_and_archive(self, dialogue: Dialogue) -> None:
-        """Mark a dialogue completed, archive it, and remove it from tracking."""
+        """Mark a dialogue completed, archive it, and remove it from tracking.
+
+        Summarization runs asynchronously in a daemon thread so the calling
+        coroutine isn't blocked by a slow (e.g. LLM-backed) summarizer. The
+        summary lands on `dialogue.summary` when ready and is picked up by the
+        next periodic persistence tick.
+        """
         dialogue.state = DialogueState.COMPLETED
         dialogue.ended_at = self._now()
         members = (
@@ -104,17 +138,91 @@ class SkillServers:
             if dialogue.interlocutor.is_group
             else None
         )
+        # Snapshot prior dialogues BEFORE archive(), so the summarizer sees
+        # only past sessions (not the one being summarized).
+        prior_dialogues: list[Dialogue] = []
+        if dialogue.interlocutor.is_bound and dialogue.session_utterances:
+            prior_dialogues = self._conversations_store.history_for(
+                dialogue.interlocutor
+            )
         self._conversations_store.archive(dialogue, group_members=members)
         self._dialogue_manager.remove_dialogue(dialogue.dialogue_id)
+
+        # Kick off async summarization (no-op if nothing to summarize).
+        if dialogue.interlocutor.is_bound and dialogue.session_utterances:
+            self._kick_off_summarization(dialogue, prior_dialogues)
+
+    def _kick_off_summarization(
+        self, dialogue: Dialogue, prior_dialogues: list[Dialogue]
+    ) -> None:
+        """Run the summarizer for `dialogue` in a daemon thread."""
+        def runner():
+            try:
+                summary = asyncio.run(
+                    self._summarizer(dialogue, prior_dialogues)
+                )
+            except Exception as exc:
+                self._node.get_logger().warn(
+                    f'[SKILLS] Summarizer failed for dialogue '
+                    f'{dialogue.dialogue_id}: {exc}'
+                )
+                return
+            dialogue.summary = summary
+            dialogue.summary_generated_at = self._now()
+            self._node.get_logger().debug(
+                f'[SKILLS] Summary stored for dialogue {dialogue.dialogue_id}'
+            )
+
+        threading.Thread(target=runner, daemon=True).start()
+
+    def _preload_summary(self, dialogue: Dialogue) -> None:
+        """Pre-fill `dialogue.history` with the most recent prior summary.
+
+        For a known interlocutor with at least one archived prior dialogue
+        carrying a non-empty summary, prepend a SUMMARY utterance followed by
+        a SESSION_BREAK marker, then advance `session_start_index` so these
+        pre-fill entries are excluded from archival.
+        """
+        if not dialogue.interlocutor.is_bound:
+            return
+        prior = self._conversations_store.history_for(dialogue.interlocutor)
+        if not prior:
+            return
+        # Most recent prior dialogue by ended_at (fallback to started_at, then
+        # leave order if neither is set).
+        latest = max(
+            prior,
+            key=lambda d: d.ended_at or d.started_at or 0.0,
+        )
+        if not latest.summary:
+            return  # No usable summary; skip pre-fill silently.
+
+        timestamp = latest.ended_at or latest.started_at or self._now()
+        dialogue.history.append(Utterance(
+            timestamp=timestamp,
+            speaker_id=SUMMARY_SPEAKER_ID,
+            text=latest.summary,
+        ))
+        dialogue.history.append(Utterance(
+            timestamp=self._now(),
+            speaker_id=SESSION_BREAK_SPEAKER_ID,
+            text='',
+        ))
+        dialogue.session_start_index = len(dialogue.history)
+        self._node.get_logger().info(
+            f'[SKILLS] Pre-filled dialogue {dialogue.dialogue_id} with prior '
+            f'summary for {dialogue.interlocutor.key}'
+        )
 
     def _inject_initial_context(self, dialogue: Dialogue) -> None:
         """Build and push the conversation context to the chatbot at start."""
         if not dialogue.interlocutor.is_bound:
             return
+        if self._chatbot_client is None:
+            return
         context = self._conversations_store.build_context(
             dialogue.interlocutor,
             now=self._now(),
-            summarize=self._context_summarizer,
         )
         if context:
             self._chatbot_client.inject_context(dialogue.dialogue_id, context)
@@ -226,21 +334,23 @@ class SkillServers:
     # =========================================================================
 
     async def _execute_chat(self, goal_handle) -> Chat.Result:
-        """Execute Chat action."""
+        """Execute Chat action.
+
+        Works with or without a chatbot backend. Without a chatbot the
+        Dialogue is a passive container: user utterances are recorded by the
+        SpeechHandler, the controlling script handles intent generation, and
+        Say goals can be addressed to the interlocutor to speak back.
+        """
         request = goal_handle.request
         self._node.get_logger().info(f'[CHAT] Executing with role="{request.role.name}"')
 
         result = Chat.Result()
+        chatbot_available = (
+            self._chatbot_client is not None
+            and self._chatbot_client.is_available(timeout_sec=1.0)
+        )
 
-        # Check chatbot availability
-        if not self._chatbot_client.is_available(timeout_sec=1.0):
-            result.result.error_code = 134  # ENOTSUP
-            result.result.error_msg = 'Chatbot not configured'
-            self._node.get_logger().warn('[CHAT] Aborted: chatbot not available')
-            goal_handle.abort()
-            return result
-
-        # Create dialogue
+        # Create dialogue (regardless of chatbot availability).
         dialogue = Dialogue(
             role=request.role,
             interlocutor=Interlocutor(
@@ -251,57 +361,72 @@ class SkillServers:
             state=DialogueState.PENDING,
             goal_handle=goal_handle
         )
+        self._preload_summary(dialogue)
         self._dialogue_manager.add_dialogue(dialogue)
         self._node.get_logger().info(f'[CHAT] Created dialogue {dialogue.dialogue_id}')
 
-        # Start dialogue with chatbot
-        chatbot_handle = await self._chatbot_client.start_dialogue(request.role)
-        if not chatbot_handle:
-            result.result.error_code = 134
-            result.result.error_msg = 'Chatbot rejected dialogue'
-            self._dialogue_manager.remove_dialogue(dialogue.dialogue_id)
-            goal_handle.abort()
-            return result
-
-        # Extract chatbot goal ID and assign to dialogue
-        from uuid import UUID as PyUUID
-        chatbot_goal_id = PyUUID(bytes=bytes(chatbot_handle.goal_id.uuid))
-        dialogue.chatbot_goal_id = chatbot_goal_id
-        self._node.get_logger().debug(
-            f'[CHAT] Assigned chatbot_goal_id={chatbot_goal_id} to dialogue'
-        )
+        chatbot_handle = None
+        if chatbot_available:
+            chatbot_handle = await self._chatbot_client.start_dialogue(request.role)
+            if not chatbot_handle:
+                result.result.error_code = 134
+                result.result.error_msg = 'Chatbot rejected dialogue'
+                self._dialogue_manager.remove_dialogue(dialogue.dialogue_id)
+                goal_handle.abort()
+                return result
+            from uuid import UUID as PyUUID
+            chatbot_goal_id = PyUUID(bytes=bytes(chatbot_handle.goal_id.uuid))
+            dialogue.chatbot_goal_id = chatbot_goal_id
+            self._node.get_logger().debug(
+                f'[CHAT] Assigned chatbot_goal_id={chatbot_goal_id} to dialogue'
+            )
+        else:
+            self._node.get_logger().info(
+                '[CHAT] No chatbot available; running as passive dialogue '
+                '(user utterances will be recorded, controlling script drives '
+                'responses via RAW_USER_INPUT intent + Say goals)'
+            )
 
         dialogue.state = DialogueState.ACTIVE
         self._node.get_logger().info(f'[CHAT] Dialogue {dialogue.dialogue_id} now ACTIVE')
 
-        # Prime the chatbot with the conversation context for this interlocutor.
+        # Prime the chatbot (no-op if chatbot is absent).
         self._inject_initial_context(dialogue)
 
-        # If initiate=true, generate initial utterance
+        # If initiate=true, generate initial utterance.
         if request.initiate:
             if request.initial_input:
                 self._node.get_logger().info('[CHAT] Speaking initial input')
-                self._tts_client.speak(request.initial_input, request.meta.priority)
-            else:
-                # Ask chatbot to generate greeting
+                self._say_client.speak(
+                    request.initial_input,
+                    priority=request.meta.priority,
+                    person_id=request.person_id,
+                    group_id=request.group_id,
+                )
+            elif chatbot_available:
                 self._node.get_logger().info('[CHAT] Requesting chatbot greeting')
                 self._chatbot_client.send_input(
                     dialogue.dialogue_id,
                     '__assistant__',
                     ''  # Empty input triggers generation
                 )
+            else:
+                self._node.get_logger().info(
+                    '[CHAT] initiate=true but no chatbot and no initial_input; '
+                    'nothing to speak'
+                )
 
-        # Wait for dialogue to complete
+        # Wait for dialogue to complete or be cancelled.
         self._node.get_logger().debug('[CHAT] Waiting for completion or cancellation')
         while not goal_handle.is_cancel_requested:
             time.sleep(0.1)
             if dialogue.state == DialogueState.COMPLETED:
                 break
 
-        # Cancel chatbot dialogue
-        chatbot_handle.cancel_goal_async()
+        if chatbot_handle is not None:
+            chatbot_handle.cancel_goal_async()
 
-        # Mark completed, archive, and clean up tracking.
+        # Mark completed, archive, summarize, and clean up tracking.
         self._finalize_and_archive(dialogue)
 
         if goal_handle.is_cancel_requested:
@@ -319,13 +444,21 @@ class SkillServers:
     # =========================================================================
 
     async def _execute_ask(self, goal_handle) -> Ask.Result:
-        """Execute Ask action (specialized Chat)."""
+        """Execute Ask action.
+
+        With a chatbot: speaks the question, hands schema validation off to
+        the chatbot, returns schema-shaped answers.
+
+        Without a chatbot: speaks the question and waits up to
+        ASK_TIMEOUT_SEC for the next user utterance from the addressed
+        interlocutor. The raw text is returned as a single free-text answer;
+        `answers_schema` is ignored in this mode.
+        """
         request = goal_handle.request
         self._node.get_logger().info(f'[ASK] Executing: "{request.question}"')
 
         result = Ask.Result()
 
-        # Build ASK_ROLE configuration
         role = DialogueRole()
         role.name = DialogueRole.ASK_ROLE
         role.configuration = json.dumps({
@@ -334,14 +467,11 @@ class SkillServers:
             if request.answers_schema else {}
         })
 
-        # Check chatbot availability
-        if not self._chatbot_client.is_available(timeout_sec=0.1):
-            result.result.error_code = 134
-            result.result.error_msg = 'Chatbot not configured'
-            goal_handle.abort()
-            return result
+        chatbot_available = (
+            self._chatbot_client is not None
+            and self._chatbot_client.is_available(timeout_sec=0.1)
+        )
 
-        # Create dialogue
         dialogue = Dialogue(
             role=role,
             interlocutor=Interlocutor(
@@ -352,45 +482,70 @@ class SkillServers:
             state=DialogueState.PENDING,
             goal_handle=goal_handle
         )
+        # ASK dialogues are excluded from context build by default so we do
+        # not pre-fill with prior summaries here.
         self._dialogue_manager.add_dialogue(dialogue)
 
-        # Start dialogue
-        chatbot_handle = await self._chatbot_client.start_dialogue(role)
-        if not chatbot_handle:
-            result.result.error_code = 134
-            result.result.error_msg = 'Chatbot rejected dialogue'
-            self._dialogue_manager.remove_dialogue(dialogue.dialogue_id)
-            goal_handle.abort()
-            return result
-
-        # Extract chatbot goal ID and assign to dialogue
-        from uuid import UUID as PyUUID
-        chatbot_goal_id = PyUUID(bytes=bytes(chatbot_handle.goal_id.uuid))
-        dialogue.chatbot_goal_id = chatbot_goal_id
-        self._node.get_logger().debug(
-            f'[ASK] Assigned chatbot_goal_id={chatbot_goal_id} to dialogue'
-        )
+        chatbot_handle = None
+        if chatbot_available:
+            chatbot_handle = await self._chatbot_client.start_dialogue(role)
+            if not chatbot_handle:
+                result.result.error_code = 134
+                result.result.error_msg = 'Chatbot rejected dialogue'
+                self._dialogue_manager.remove_dialogue(dialogue.dialogue_id)
+                goal_handle.abort()
+                return result
+            from uuid import UUID as PyUUID
+            chatbot_goal_id = PyUUID(bytes=bytes(chatbot_handle.goal_id.uuid))
+            dialogue.chatbot_goal_id = chatbot_goal_id
+            self._node.get_logger().debug(
+                f'[ASK] Assigned chatbot_goal_id={chatbot_goal_id} to dialogue'
+            )
 
         dialogue.state = DialogueState.ACTIVE
 
-        # ASK dialogues are excluded from context by default, so we do not
-        # prime the chatbot with prior conversations here.
-
-        # Speak the question
-        self._node.get_logger().info('[ASK] Speaking question via TTS')
-        self._tts_client.speak(request.question, request.meta.priority)
-        # Record the question as a robot utterance against the dialogue.
+        self._node.get_logger().info('[ASK] Speaking question via Say sub-skill')
+        self._say_client.speak(
+            request.question,
+            priority=request.meta.priority,
+            person_id=request.person_id,
+            group_id=request.group_id,
+        )
         dialogue.add_utterance(
             ROBOT_SPEAKER_ID, request.question, self._now()
         )
 
-        # Wait for dialogue completion
+        if chatbot_available:
+            await self._await_chatbot_ask_answers(
+                goal_handle, dialogue, chatbot_handle, result
+            )
+        else:
+            self._await_raw_ask_answer(goal_handle, dialogue, result)
+
+        self._finalize_and_archive(dialogue)
+
+        if goal_handle.is_cancel_requested:
+            if chatbot_handle is not None:
+                chatbot_handle.cancel_goal_async()
+            goal_handle.canceled()
+            result.result.error_code = 125
+            return result
+
+        goal_handle.succeed()
+        return result
+
+    async def _await_chatbot_ask_answers(
+        self,
+        goal_handle,
+        dialogue: Dialogue,
+        chatbot_handle,
+        result: Ask.Result,
+    ) -> None:
+        """Wait for the chatbot dialogue to complete and capture answers."""
         while not goal_handle.is_cancel_requested:
             time.sleep(0.1)
             if dialogue.state == DialogueState.COMPLETED:
                 break
-
-        # Get results from chatbot
         try:
             chatbot_result_future = chatbot_handle.get_result_async()
             chatbot_result = await chatbot_result_future
@@ -399,17 +554,39 @@ class SkillServers:
         except Exception as e:
             self._node.get_logger().warn(f'[ASK] Failed to get results: {e}')
 
-        # Mark completed, archive, and clean up tracking.
-        self._finalize_and_archive(dialogue)
+    def _await_raw_ask_answer(
+        self,
+        goal_handle,
+        dialogue: Dialogue,
+        result: Ask.Result,
+    ) -> None:
+        """Wait up to ASK_TIMEOUT_SEC for the next user utterance.
 
-        if goal_handle.is_cancel_requested:
-            chatbot_handle.cancel_goal_async()
-            goal_handle.canceled()
-            result.result.error_code = 125
-            return result
-
-        goal_handle.succeed()
-        return result
+        Treats the first non-robot utterance recorded against this dialogue
+        as the answer. Times out silently with empty `answers` if no
+        utterance arrives in time.
+        """
+        baseline = len(dialogue.session_utterances)
+        deadline = time.monotonic() + ASK_TIMEOUT_SEC
+        self._node.get_logger().info(
+            f'[ASK] Waiting up to {ASK_TIMEOUT_SEC:.1f}s for user response'
+        )
+        while not goal_handle.is_cancel_requested:
+            if time.monotonic() > deadline:
+                self._node.get_logger().info(
+                    '[ASK] Timeout waiting for user response'
+                )
+                result.result.error_msg = 'timeout waiting for response'
+                return
+            new = dialogue.session_utterances[baseline:]
+            for utt in new:
+                if utt.speaker_id != ROBOT_SPEAKER_ID:
+                    result.answers = json.dumps({'input': utt.text})
+                    self._node.get_logger().info(
+                        f'[ASK] Captured raw answer: "{utt.text}"'
+                    )
+                    return
+            time.sleep(0.05)
 
     # =========================================================================
     # Say execution
@@ -430,10 +607,10 @@ class SkillServers:
         # Set expression priority
         self._dialogue_manager.set_expression_priority(priority)
 
-        # Check TTS availability
-        if not self._tts_client.is_available(timeout_sec=1.0):
+        # Check Say sub-skill availability
+        if not self._say_client.is_available(timeout_sec=1.0):
             result.result.error_code = 134
-            result.result.error_msg = 'TTS not available'
+            result.result.error_msg = 'Say sub-skill not available'
             self._dialogue_manager.clear_expression_priority()
             goal_handle.abort()
             return result
@@ -469,10 +646,16 @@ class SkillServers:
                     request.input,
                     priority=priority,
                     cancel_event=cancel_event,
+                    person_id=request.person_id,
+                    group_id=request.group_id,
                 )
             else:
-                success = self._tts_client.speak_and_wait(
-                    request.input, priority, cancel_event
+                success = self._say_client.speak_and_wait(
+                    request.input,
+                    priority=priority,
+                    cancel_event=cancel_event,
+                    person_id=request.person_id,
+                    group_id=request.group_id,
                 )
         finally:
             cancel_event.set()  # Stop the cancel-check thread

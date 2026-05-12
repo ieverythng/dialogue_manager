@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Expression executor: walks an AST and dispatches TTS and ROS2 calls."""
+"""Expression executor: walks an AST and dispatches Say and ROS2 calls."""
 
 from __future__ import annotations
 
@@ -46,13 +46,13 @@ class ExpressionExecutor:
     def __init__(
         self,
         node: Node,
-        tts_client: Any,  # TTSClient - avoid circular import
+        say_client: Any,  # SayClient - avoid circular import
         action_library: ActionLibrary,
         expression_timeout: float = 60.0,
     ):
         """Initialize the executor."""
         self._node = node
-        self._tts_client = tts_client
+        self._say_client = say_client
         self._action_library = action_library
         self._expression_timeout = expression_timeout
 
@@ -62,6 +62,8 @@ class ExpressionExecutor:
         priority: int = 128,
         variables: dict | None = None,
         cancel_event: threading.Event | None = None,
+        person_id: str = '',
+        group_id: str = '',
     ) -> bool:
         """Parse and execute a markup expression string (blocking)."""
         try:
@@ -69,11 +71,18 @@ class ExpressionExecutor:
         except MarkupParseError as e:
             self._node.get_logger().warn(f'[MARKUP] Parse error: {e}')
             # Fallback: speak the raw text
-            return self._tts_client.speak_and_wait(
-                text, priority, cancel_event
+            return self._say_client.speak_and_wait(
+                text,
+                priority=priority,
+                cancel_event=cancel_event,
+                person_id=person_id,
+                group_id=group_id,
             )
 
-        return self.execute(expression, priority, variables, cancel_event)
+        return self.execute(
+            expression, priority, variables, cancel_event,
+            person_id=person_id, group_id=group_id,
+        )
 
     def execute(
         self,
@@ -81,6 +90,8 @@ class ExpressionExecutor:
         priority: int = 128,
         variables: dict | None = None,
         cancel_event: threading.Event | None = None,
+        person_id: str = '',
+        group_id: str = '',
     ) -> bool:
         """Execute a parsed expression (blocking)."""
         if cancel_event is None:
@@ -92,10 +103,12 @@ class ExpressionExecutor:
             priority=priority,
             variables=variables or {},
             deadline=time.monotonic() + self._expression_timeout,
+            person_id=person_id,
+            group_id=group_id,
         )
 
         try:
-            # Group consecutive text/variable segments into TTS chunks,
+            # Group consecutive text/variable segments into Say chunks,
             # then process each segment
             segments = list(expression.segments)
             i = 0
@@ -113,7 +126,7 @@ class ExpressionExecutor:
                 seg = segments[i]
 
                 # Collect consecutive text/variable text for a single
-                # TTS utterance
+                # Say utterance
                 if isinstance(seg, (TextSegment, VariableText)):
                     text_parts: list[str] = []
                     while i < len(segments) and isinstance(
@@ -131,9 +144,9 @@ class ExpressionExecutor:
                                 or s.default
                             )
                         i += 1
-                    tts_text = ''.join(text_parts)
-                    if tts_text.strip():
-                        if not self._speak(tts_text, ctx):
+                    say_text = ''.join(text_parts)
+                    if say_text.strip():
+                        if not self._speak(say_text, ctx):
                             return False
                     continue
 
@@ -174,9 +187,13 @@ class ExpressionExecutor:
     # -- Internal execution methods -----------------------------------------
 
     def _speak(self, text: str, ctx: _ExecutionContext) -> bool:
-        """Send text to TTS and wait for completion."""
-        return self._tts_client.speak_and_wait(
-            text, ctx.priority, ctx.cancel_event
+        """Send text to the Say sub-skill and wait for completion."""
+        return self._say_client.speak_and_wait(
+            text,
+            priority=ctx.priority,
+            cancel_event=ctx.cancel_event,
+            person_id=ctx.person_id,
+            group_id=ctx.group_id,
         )
 
     def _pause(self, duration: float, ctx: _ExecutionContext) -> bool:
@@ -413,7 +430,7 @@ class _ExecutionContext:
 
     __slots__ = (
         'tracked_actions', 'cancel_event', 'priority',
-        'variables', 'deadline',
+        'variables', 'deadline', 'person_id', 'group_id',
     )
 
     def __init__(
@@ -423,6 +440,8 @@ class _ExecutionContext:
         priority: int,
         variables: dict,
         deadline: float,
+        person_id: str = '',
+        group_id: str = '',
     ):
         """Initialize execution context."""
         self.tracked_actions = tracked_actions
@@ -430,6 +449,8 @@ class _ExecutionContext:
         self.priority = priority
         self.variables = variables
         self.deadline = deadline
+        self.person_id = person_id
+        self.group_id = group_id
 
 
 class _TrackedAction:
