@@ -334,32 +334,71 @@ class TestDialogueManager:
         manager.clear_expression_priority()
         assert manager.current_max_priority == -1
 
-    def test_can_accept_priority_higher(self):
-        """Higher priority than current max is accepted."""
+    def test_can_start_dialogue_higher(self):
+        """A new dialogue at strictly higher priority is accepted."""
         manager = DialogueManager()
         role = DialogueRole(name='test')
         dialogue = Dialogue(role=role, priority=100, state=DialogueState.ACTIVE)
         manager.add_dialogue(dialogue)
 
-        assert manager.can_accept_priority(150) is True
+        assert manager.can_start_dialogue(150) is True
 
-    def test_can_accept_priority_equal(self):
-        """Equal priority to current max is rejected."""
+    def test_can_start_dialogue_equal_is_rejected(self):
+        """Equal-priority new dialogue is rejected (no preemption)."""
         manager = DialogueManager()
         role = DialogueRole(name='test')
         dialogue = Dialogue(role=role, priority=100, state=DialogueState.ACTIVE)
         manager.add_dialogue(dialogue)
 
-        assert manager.can_accept_priority(100) is False
+        assert manager.can_start_dialogue(100) is False
 
-    def test_can_accept_priority_lower(self):
-        """Lower priority than current max is rejected."""
+    def test_can_start_dialogue_lower_is_rejected(self):
+        """Lower-priority new dialogue is rejected."""
         manager = DialogueManager()
         role = DialogueRole(name='test')
         dialogue = Dialogue(role=role, priority=100, state=DialogueState.ACTIVE)
         manager.add_dialogue(dialogue)
 
-        assert manager.can_accept_priority(50) is False
+        assert manager.can_start_dialogue(50) is False
+
+    def test_can_start_dialogue_ignores_expression_priority(self):
+        """Active expression does NOT block a new dialogue."""
+        manager = DialogueManager()
+        manager.set_expression_priority(200)
+
+        assert manager.can_start_dialogue(50) is True
+
+    def test_can_speak_equal_is_accepted(self):
+        """Equal-priority Say is accepted (cooperative semantics)."""
+        manager = DialogueManager()
+        manager.set_expression_priority(0)
+
+        assert manager.can_speak(0) is True
+
+    def test_can_speak_higher_is_accepted(self):
+        """Higher-priority Say is accepted."""
+        manager = DialogueManager()
+        manager.set_expression_priority(50)
+
+        assert manager.can_speak(100) is True
+
+    def test_can_speak_lower_is_rejected(self):
+        """Lower-priority Say is rejected."""
+        manager = DialogueManager()
+        manager.set_expression_priority(100)
+
+        assert manager.can_speak(50) is False
+
+    def test_can_speak_ignores_dialogue_priority(self):
+        """Active dialogues at any priority do NOT block Says."""
+        manager = DialogueManager()
+        role = DialogueRole(name='test')
+        dialogue = Dialogue(role=role, priority=200, state=DialogueState.ACTIVE)
+        manager.add_dialogue(dialogue)
+
+        # No expression currently speaking → any Say can speak.
+        assert manager.can_speak(0) is True
+        assert manager.can_speak(255) is True
 
     def test_get_dialogue_for_interlocutor_found(self):
         """Find active dialogue for an interlocutor."""

@@ -252,42 +252,59 @@ class SkillServers:
     # =========================================================================
 
     def _chat_goal_callback(self, goal_request) -> GoalResponse:
-        """Accept or reject Chat goals based on state and priority."""
+        """Accept or reject Chat goals based on state and dialogue priority."""
         if not self._is_active:
             self._node.get_logger().warn('[CHAT] Rejected: node not active')
             return GoalResponse.REJECT
 
         priority = goal_request.meta.priority
-        if not self._dialogue_manager.can_accept_priority(priority):
-            self._node.get_logger().warn(f'[CHAT] Rejected: priority {priority} too low')
+        if not self._dialogue_manager.can_start_dialogue(priority):
+            self._node.get_logger().warn(
+                f'[CHAT] Rejected: priority {priority} not greater than '
+                f'active dialogue priority '
+                f'{self._dialogue_manager.max_active_dialogue_priority}'
+            )
             return GoalResponse.REJECT
 
         self._node.get_logger().info(f'[CHAT] Goal accepted (priority={priority})')
         return GoalResponse.ACCEPT
 
     def _ask_goal_callback(self, goal_request) -> GoalResponse:
-        """Accept or reject Ask goals based on state and priority."""
+        """Accept or reject Ask goals based on state and dialogue priority."""
         if not self._is_active:
             self._node.get_logger().warn('[ASK] Rejected: node not active')
             return GoalResponse.REJECT
 
         priority = goal_request.meta.priority
-        if not self._dialogue_manager.can_accept_priority(priority):
-            self._node.get_logger().warn(f'[ASK] Rejected: priority {priority} too low')
+        if not self._dialogue_manager.can_start_dialogue(priority):
+            self._node.get_logger().warn(
+                f'[ASK] Rejected: priority {priority} not greater than '
+                f'active dialogue priority '
+                f'{self._dialogue_manager.max_active_dialogue_priority}'
+            )
             return GoalResponse.REJECT
 
         self._node.get_logger().info(f'[ASK] Goal accepted (priority={priority})')
         return GoalResponse.ACCEPT
 
     def _say_goal_callback(self, goal_request) -> GoalResponse:
-        """Accept or reject Say goals based on state and priority."""
+        """Accept or reject Say goals based on state and expression priority.
+
+        Say competes with whatever expression is currently speaking, not
+        with active dialogue priorities — a Say can speak alongside any
+        dialogue. Equal-priority Says preempt cooperatively.
+        """
         if not self._is_active:
             self._node.get_logger().warn('[SAY] Rejected: node not active')
             return GoalResponse.REJECT
 
         priority = goal_request.meta.priority
-        if not self._dialogue_manager.can_accept_priority(priority):
-            self._node.get_logger().warn(f'[SAY] Rejected: priority {priority} too low')
+        if not self._dialogue_manager.can_speak(priority):
+            self._node.get_logger().warn(
+                f'[SAY] Rejected: priority {priority} below current '
+                f'expression priority '
+                f'{self._dialogue_manager.current_expression_priority}'
+            )
             return GoalResponse.REJECT
 
         self._node.get_logger().info(f'[SAY] Goal accepted (priority={priority})')

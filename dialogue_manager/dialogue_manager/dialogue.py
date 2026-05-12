@@ -190,19 +190,49 @@ class DialogueManager:
         return self._dialogues
 
     @property
-    def current_max_priority(self) -> int:
-        """Return the maximum priority of all active dialogues and expressions."""
-        dialogue_priorities = [
+    def max_active_dialogue_priority(self) -> int:
+        """Return the highest priority among ACTIVE/WAITING dialogues (or -1)."""
+        priorities = [
             d.priority for d in self._dialogues.values()
             if d.state in (DialogueState.ACTIVE, DialogueState.WAITING_RESPONSE)
         ]
-        if dialogue_priorities:
-            return max(max(dialogue_priorities), self._current_expression_priority)
+        return max(priorities) if priorities else -1
+
+    @property
+    def current_expression_priority(self) -> int:
+        """Return the priority of the expression currently speaking (or -1)."""
         return self._current_expression_priority
 
-    def can_accept_priority(self, priority: int) -> bool:
-        """Check if a new goal with given priority can be accepted."""
-        return priority > self.current_max_priority
+    @property
+    def current_max_priority(self) -> int:
+        """Return the overall max priority (dialogues + expressions).
+
+        Useful for diagnostics / display. Not used for goal acceptance —
+        Chat/Ask vs Say have distinct gating rules, see
+        `can_start_dialogue` and `can_speak`.
+        """
+        return max(
+            self.max_active_dialogue_priority,
+            self._current_expression_priority,
+        )
+
+    def can_start_dialogue(self, priority: int) -> bool:
+        """Return True if a *new* Chat/Ask goal at `priority` can be accepted.
+
+        Preemption rule: a new dialogue must be strictly higher than the
+        highest-priority dialogue currently active. Does NOT consider the
+        currently-speaking expression — that's a separate channel.
+        """
+        return priority > self.max_active_dialogue_priority
+
+    def can_speak(self, priority: int) -> bool:
+        """Return True if a Say (or other expression) at `priority` can speak.
+
+        Cooperative rule: an expression must be at least as high as the
+        expression that's currently speaking. Dialogue priorities don't
+        gate Says — a Say speaks alongside whatever dialogue is active.
+        """
+        return priority >= self._current_expression_priority
 
     def set_change_callback(
         self, callback: Callable[[str | None], None] | None

@@ -271,22 +271,46 @@ class TestSkillServersPriorityRejection:
         )
         self.servers._is_active = True
 
-    def test_chat_goal_rejected_lower_priority(self):
-        """Chat goal rejected when priority is too low."""
-        # Set current expression priority
-        self.mock_dialogue_manager.set_expression_priority(200)
+    def test_chat_goal_rejected_when_lower_than_active_dialogue(self):
+        """Chat goal rejected when lower than an active dialogue's priority."""
+        active = Dialogue(
+            role=DialogueRole(name='test'),
+            interlocutor=Interlocutor(person_id='alice'),
+            priority=200,
+            state=DialogueState.ACTIVE,
+        )
+        self.mock_dialogue_manager.add_dialogue(active)
 
         mock_request = MagicMock()
-        mock_request.meta.priority = 100  # Lower than 200
+        mock_request.meta.priority = 100
 
         from rclpy.action import GoalResponse
         result = self.servers._chat_goal_callback(mock_request)
 
         assert result == GoalResponse.REJECT
 
-    def test_ask_goal_rejected_lower_priority(self):
-        """Ask goal rejected when priority is too low."""
+    def test_chat_goal_ignores_expression_priority(self):
+        """Chat acceptance is decoupled from current expression priority."""
+        # An expression speaking at high priority must NOT block a new Chat.
         self.mock_dialogue_manager.set_expression_priority(200)
+
+        mock_request = MagicMock()
+        mock_request.meta.priority = 100
+
+        from rclpy.action import GoalResponse
+        result = self.servers._chat_goal_callback(mock_request)
+
+        assert result == GoalResponse.ACCEPT
+
+    def test_ask_goal_rejected_when_lower_than_active_dialogue(self):
+        """Ask goal rejected when lower than an active dialogue's priority."""
+        active = Dialogue(
+            role=DialogueRole(name='test'),
+            interlocutor=Interlocutor(person_id='alice'),
+            priority=200,
+            state=DialogueState.ACTIVE,
+        )
+        self.mock_dialogue_manager.add_dialogue(active)
 
         mock_request = MagicMock()
         mock_request.meta.priority = 100
@@ -296,8 +320,8 @@ class TestSkillServersPriorityRejection:
 
         assert result == GoalResponse.REJECT
 
-    def test_say_goal_rejected_lower_priority(self):
-        """Say goal rejected when priority is too low."""
+    def test_say_goal_rejected_when_lower_than_expression(self):
+        """Say goal rejected when below current expression priority."""
         self.mock_dialogue_manager.set_expression_priority(200)
 
         mock_request = MagicMock()
@@ -307,6 +331,36 @@ class TestSkillServersPriorityRejection:
         result = self.servers._say_goal_callback(mock_request)
 
         assert result == GoalResponse.REJECT
+
+    def test_say_goal_ignores_dialogue_priority(self):
+        """Say goal can speak alongside any active dialogue."""
+        active = Dialogue(
+            role=DialogueRole(name='test'),
+            interlocutor=Interlocutor(person_id='alice'),
+            priority=200,
+            state=DialogueState.ACTIVE,
+        )
+        self.mock_dialogue_manager.add_dialogue(active)
+
+        mock_request = MagicMock()
+        mock_request.meta.priority = 0
+
+        from rclpy.action import GoalResponse
+        result = self.servers._say_goal_callback(mock_request)
+
+        assert result == GoalResponse.ACCEPT
+
+    def test_say_goal_accepted_at_equal_expression_priority(self):
+        """Equal-priority Say is accepted (cooperative)."""
+        self.mock_dialogue_manager.set_expression_priority(100)
+
+        mock_request = MagicMock()
+        mock_request.meta.priority = 100
+
+        from rclpy.action import GoalResponse
+        result = self.servers._say_goal_callback(mock_request)
+
+        assert result == GoalResponse.ACCEPT
 
 
 class TestSkillServersCancelCallback:
