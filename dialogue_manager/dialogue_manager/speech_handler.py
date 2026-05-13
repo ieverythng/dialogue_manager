@@ -15,6 +15,8 @@
 """Speech input handler for the Dialogue Manager."""
 
 import json
+import threading
+from uuid import UUID
 
 from chatbot_msgs.msg import DialogueRole
 from hri_actions_msgs.msg import ClosedCaption, Intent
@@ -77,6 +79,13 @@ class SpeechHandler:
 
         self._default_chat_role: str = ''
         self._default_chat_role_config: str = '{}'
+
+        # Utterances received while a chatbot attach is in flight. Keyed by
+        # dialogue_id; the entry exists iff attach is pending. Guarded by
+        # `_pending_attach_lock` because callbacks run on the multi-threaded
+        # executor.
+        self._pending_attach: dict[UUID, list[tuple[str, str, str]]] = {}
+        self._pending_attach_lock = threading.Lock()
 
     def _now(self) -> float:
         """Return the current time in epoch seconds, from the node clock."""
@@ -183,21 +192,31 @@ class SpeechHandler:
         # Forward to the speaker's chatbot if attached. Speaker's dialogue
         # is the first recipient (when one exists / was spawned).
         speaker_dialogue = recipients[0] if recipients else None
-        chatbot_forwarding = (
-            self._chatbot_enabled
-            and self._chatbot_client is not None
-            and speaker_dialogue is not None
-            and speaker_dialogue.chatbot_goal_id is not None
-        )
-        if chatbot_forwarding:
-            self._node.get_logger().info(
-                f'[SPEECH INPUT] Forwarding to chatbot for dialogue '
-                f'{speaker_dialogue.dialogue_id}'
-            )
-            self._chatbot_client.send_input(
-                speaker_dialogue.dialogue_id, voice_id, msg.final
-            )
-            return
+
+        if (self._chatbot_enabled
+                and self._chatbot_client is not None
+                and speaker_dialogue is not None):
+            if speaker_dialogue.chatbot_goal_id is not None:
+                self._node.get_logger().info(
+                    f'[SPEECH INPUT] Forwarding to chatbot for dialogue '
+                    f'{speaker_dialogue.dialogue_id}'
+                )
+                self._chatbot_client.send_input(
+                    speaker_dialogue.dialogue_id, voice_id, msg.final
+                )
+                return
+
+            # Attach in flight: queue the utterance for flushing on
+            # acceptance (or RAW_USER_INPUT fallback on rejection).
+            with self._pending_attach_lock:
+                pending = self._pending_attach.get(speaker_dialogue.dialogue_id)
+                if pending is not None:
+                    pending.append((voice_id, msg.final, msg.locale))
+                    self._node.get_logger().info(
+                        f'[SPEECH INPUT] Queued (chatbot attach pending) '
+                        f'for dialogue {speaker_dialogue.dialogue_id}'
+                    )
+                    return
 
         self._node.get_logger().info(
             '[SPEECH INPUT] Publishing as RAW_USER_INPUT'
@@ -304,8 +323,49 @@ class SpeechHandler:
         if (attach_chatbot
                 and self._chatbot_client is not None
                 and self._chatbot_enabled):
-            self._chatbot_client.attach_to_dialogue(dialogue, role)
+            with self._pending_attach_lock:
+                self._pending_attach[dialogue.dialogue_id] = []
+            dispatched = self._chatbot_client.attach_to_dialogue(
+                dialogue, role,
+                on_accepted=self._on_chatbot_attached,
+                on_rejected=self._on_chatbot_attach_failed,
+            )
+            if not dispatched:
+                # Server unreachable: no callback will fire, so drop the
+                # pending entry to avoid silently swallowing future
+                # utterances into a queue nobody will flush.
+                with self._pending_attach_lock:
+                    self._pending_attach.pop(dialogue.dialogue_id, None)
         return dialogue
+
+    def _on_chatbot_attached(self, dialogue: Dialogue) -> None:
+        """Flush any utterances that arrived during the chatbot attach."""
+        with self._pending_attach_lock:
+            queue = self._pending_attach.pop(dialogue.dialogue_id, None)
+        if not queue:
+            return
+        self._node.get_logger().info(
+            f'[SPEECH INPUT] Flushing {len(queue)} queued utterance(s) to '
+            f'chatbot for dialogue {dialogue.dialogue_id}'
+        )
+        for voice_id, text, _locale in queue:
+            self._chatbot_client.send_input(
+                dialogue.dialogue_id, voice_id, text
+            )
+
+    def _on_chatbot_attach_failed(self, dialogue: Dialogue) -> None:
+        """Publish queued utterances as RAW_USER_INPUT on attach rejection."""
+        with self._pending_attach_lock:
+            queue = self._pending_attach.pop(dialogue.dialogue_id, None)
+        if not queue:
+            return
+        self._node.get_logger().error(
+            f'[SPEECH INPUT] !!! Chatbot attach failed for dialogue '
+            f'{dialogue.dialogue_id}; falling back to RAW_USER_INPUT for '
+            f'{len(queue)} queued utterance(s). THIS SHOULD NOT HAPPEN.'
+        )
+        for voice_id, text, locale in queue:
+            self._publish_raw_intent(text, voice_id, locale)
 
     # ------------------------------------------------------------ helpers
 

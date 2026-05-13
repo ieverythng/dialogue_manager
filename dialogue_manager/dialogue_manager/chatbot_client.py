@@ -123,7 +123,11 @@ class ChatbotClient:
         return self._dialogue_client.wait_for_server(timeout_sec=timeout_sec)
 
     def attach_to_dialogue(
-        self, dialogue: Dialogue, role: DialogueRole
+        self,
+        dialogue: Dialogue,
+        role: DialogueRole,
+        on_accepted: Callable[[Dialogue], None] | None = None,
+        on_rejected: Callable[[Dialogue], None] | None = None,
     ) -> bool:
         """
         Asynchronously start a chatbot dialogue and attach it to `dialogue`.
@@ -133,10 +137,9 @@ class ChatbotClient:
         SpeechHandler input is forwarded to the chatbot. Returns True if
         the goal was dispatched (server reachable), False otherwise.
 
-        Speech that arrives *between* this call returning and the goal
-        being accepted is still recorded into the dialogue history but
-        not forwarded to the chatbot — a small first-utterance race that
-        callers should be aware of.
+        `on_accepted` / `on_rejected` are invoked from the goal-response
+        thread after `chatbot_goal_id` is set (or proven unobtainable),
+        letting callers flush any speech that arrived during the attach.
         """
         if not self._dialogue_client or not self._dialogue_client.wait_for_server(
             timeout_sec=1.0
@@ -149,7 +152,9 @@ class ChatbotClient:
         goal.role = role
         future = self._dialogue_client.send_goal_async(goal)
         future.add_done_callback(
-            lambda f, d=dialogue: self._on_attached_goal_response(f, d)
+            lambda f, d=dialogue: self._on_attached_goal_response(
+                f, d, on_accepted, on_rejected
+            )
         )
         self._node.get_logger().info(
             f'[CHATBOT] Attaching chatbot dialogue to {dialogue.dialogue_id} '
@@ -157,14 +162,23 @@ class ChatbotClient:
         )
         return True
 
-    def _on_attached_goal_response(self, future, dialogue: Dialogue) -> None:
+    def _on_attached_goal_response(
+        self,
+        future,
+        dialogue: Dialogue,
+        on_accepted: Callable[[Dialogue], None] | None,
+        on_rejected: Callable[[Dialogue], None] | None,
+    ) -> None:
         """Handle the chatbot goal acceptance for an attached dialogue."""
         goal_handle = future.result()
         if not goal_handle or not goal_handle.accepted:
-            self._node.get_logger().warn(
-                f'[CHATBOT] Chatbot rejected dialogue '
-                f'{dialogue.dialogue_id}; running passive'
+            self._node.get_logger().error(
+                f'[CHATBOT] !!! Chatbot REJECTED dialogue '
+                f'{dialogue.dialogue_id}; THIS SHOULD NOT HAPPEN. '
+                'Running passive.'
             )
+            if on_rejected:
+                on_rejected(dialogue)
             return
         chatbot_goal_id = UUID(bytes=bytes(goal_handle.goal_id.uuid))
         dialogue.chatbot_goal_id = chatbot_goal_id
@@ -173,6 +187,8 @@ class ChatbotClient:
             f'[CHATBOT] Attached chatbot_goal_id={chatbot_goal_id} to '
             f'dialogue {dialogue.dialogue_id}'
         )
+        if on_accepted:
+            on_accepted(dialogue)
 
     def send_input(
         self,
