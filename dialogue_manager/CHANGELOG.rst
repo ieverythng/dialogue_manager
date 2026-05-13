@@ -2,6 +2,23 @@
 Changelog for package dialogue_manager
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Forthcoming
+-----------
+* chatbot: queue first-utterance speech across async attach
+  attach_to_dialogue() dispatches the chatbot goal asynchronously, so on
+  the first utterance from a new speaker chatbot_goal_id was still None
+  when SpeechHandler checked it — the speech fell through to
+  RAW_USER_INPUT and the chatbot never saw the first user input. The
+  second utterance worked because by then the goal had been accepted.
+  SpeechHandler now keeps a per-dialogue pending queue (lock-guarded
+  because callbacks run on the MultiThreadedExecutor + ReentrantCallbackGroup).
+  Utterances received while attach is in flight are queued; on acceptance
+  they are flushed via send_input(). On rejection the queue is
+  republished as RAW_USER_INPUT and an error fires — rejection should not
+  happen under normal operation.
+  Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+* Contributors: Séverin Lemaignan
+
 2.0.0 (2026-05-13)
 ------------------
 
