@@ -2,8 +2,8 @@
 Changelog for package rqt_dialogues
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
+2.0.0 (2026-05-13)
+------------------
 
 Introduce rqt_dialogues, a rqt plugin for visualizing and managing dialogues in
 ROS2.
