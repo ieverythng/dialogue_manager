@@ -9,8 +9,11 @@
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-"""Execute a multi-party dialogue scenario from a small DSL.
+"""
+Execute a multi-party dialogue scenario from a small DSL.
 
 The DSL (see `test/dialogues/dialogue_1.md`) lets us describe a
 multi-party conversation as a sequence of speaker turns and stage
@@ -292,7 +295,8 @@ class _Scenario:
         raise ValueError(f'unrecognised assertion: {text!r}')
 
     def _group_realised(self, target: Interlocutor) -> bool:
-        """True if a dialogue with exactly this group's members exists.
+        """
+        Return True if a dialogue with exactly this group's members exists.
 
         Spans active and archived dialogues — a group "exists" once any
         dialogue with that exact member set has ever been spawned, even
@@ -322,7 +326,8 @@ class _Scenario:
 
     @staticmethod
     def _members_of_group_id(group_id: str) -> frozenset[str]:
-        """Recover the member set from a DSL-formatted group_id.
+        """
+        Recover the member set from a DSL-formatted group_id.
 
         Our test DSL builds group ids as `'group_<sorted_members_joined_
         by_underscore>'`, e.g. `'group_A_B_C'`. Returns an empty set for
@@ -336,7 +341,8 @@ class _Scenario:
         return frozenset(body.split('_'))
 
     def _all_dialogues_for(self, interlocutor: Interlocutor) -> list[Dialogue]:
-        """Return every Dialogue (active or archived) for `interlocutor`.
+        """
+        Return every Dialogue (active or archived) for `interlocutor`.
 
         Semantics:
 

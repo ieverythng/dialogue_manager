@@ -27,8 +27,8 @@ from dialogue_manager.dialogue import (
     Interlocutor,
 )
 from dialogue_manager.dialogue_lifecycle import (
-    DialogueLifecycle,
     default_summarizer,
+    DialogueLifecycle,
 )
 
 

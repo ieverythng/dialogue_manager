@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Dialogue session endgame: finalize, archive, summarize.
+"""
+Dialogue session endgame: finalize, archive, summarize.
 
 These operations live outside `SkillServers` so the same code path is
 used regardless of who decided the dialogue should end — a Chat/Ask
@@ -53,7 +54,8 @@ async def default_summarizer(
 
 
 class DialogueLifecycle:
-    """Owns the "end of session" logic: finalize, archive, summarize.
+    """
+    Owns the "end of session" logic: finalize, archive, summarize.
 
     Decoupled from `SkillServers` so any caller (skill execution,
     group dispersal, lifecycle deactivation) can drive it through a
@@ -68,7 +70,8 @@ class DialogueLifecycle:
         group_handler=None,  # GroupHandler | None — avoid circular import
         summarizer: Summarizer | None = None,
     ):
-        """Initialize the lifecycle helper.
+        """
+        Initialize the lifecycle helper.
 
         Parameters
         ----------
@@ -107,7 +110,8 @@ class DialogueLifecycle:
             return []
 
     def finalize_and_archive(self, dialogue: Dialogue) -> None:
-        """Mark `dialogue` completed, archive it, and remove from tracking.
+        """
+        Mark `dialogue` completed, archive it, and remove from tracking.
 
         Summarization runs asynchronously in a daemon thread so the calling
         coroutine isn't blocked by a slow (e.g. LLM-backed) summarizer. The

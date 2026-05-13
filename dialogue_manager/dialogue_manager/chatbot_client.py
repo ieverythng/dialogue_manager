@@ -125,7 +125,8 @@ class ChatbotClient:
     def attach_to_dialogue(
         self, dialogue: Dialogue, role: DialogueRole
     ) -> bool:
-        """Asynchronously start a chatbot dialogue and attach it to `dialogue`.
+        """
+        Asynchronously start a chatbot dialogue and attach it to `dialogue`.
 
         Sends a start_dialogue goal to the chatbot in the background; on
         acceptance, sets `dialogue.chatbot_goal_id` so subsequent

@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Debug-state publisher for the Dialogue Manager.
+"""
+Debug-state publisher for the Dialogue Manager.
 
 Publishes a JSON snapshot of the manager's internal state to a latched
 `std_msgs/String` topic so an introspection tool (e.g. the `rqt_dialogues`
@@ -85,7 +86,8 @@ class DebugStatePublisher:
         chatbot_status: Callable[[], dict] | None = None,
         active_status: Callable[[], bool] | None = None,
     ):
-        """Initialize the debug-state publisher.
+        """
+        Initialize the debug-state publisher.
 
         Parameters
         ----------
@@ -139,7 +141,8 @@ class DebugStatePublisher:
             self._pub = None
 
     def notify(self, dialogue_id: str | None = None) -> None:
-        """Publish a fresh snapshot, optionally bumping a dialogue's update timestamp.
+        """
+        Publish a fresh snapshot, optionally bumping a dialogue's update timestamp.
 
         Call this from anywhere in the dialogue_manager code where state has
         meaningfully changed: add_dialogue, remove_dialogue, add_utterance,

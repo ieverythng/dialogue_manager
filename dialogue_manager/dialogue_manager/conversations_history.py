@@ -132,7 +132,8 @@ class ConversationsHistoryStore:
         return list(self._by_interlocutor.get(interlocutor.key, []))
 
     def preload_into(self, dialogue: Dialogue, now: float) -> bool:
-        """Pre-fill `dialogue.history` with the most recent prior summary.
+        """
+        Pre-fill `dialogue.history` with the most recent prior summary.
 
         For a known interlocutor with at least one archived prior dialogue
         carrying a non-empty summary, prepend a SUMMARY utterance followed by

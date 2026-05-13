@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Track ROS4HRI groups (`/humans/interactions/groups`).
+"""
+Track ROS4HRI groups (`/humans/interactions/groups`).
 
 Each `hri_msgs/Group` message describes a single group's current members.
 The topic is latched (TRANSIENT_LOCAL) and group dispersal is signalled
@@ -39,7 +40,8 @@ class GroupHandler:
         on_group_changed: Callable[[str, frozenset[str]], None] | None = None,
         on_group_dispersed: Callable[[str], None] | None = None,
     ):
-        """Initialize the group handler.
+        """
+        Initialize the group handler.
 
         Parameters
         ----------
@@ -128,7 +130,8 @@ class GroupHandler:
         )
 
     def co_members_of(self, person_id: str) -> set[str]:
-        """Return all persons sharing at least one group with `person_id`.
+        """
+        Return all persons sharing at least one group with `person_id`.
 
         The person themselves is excluded.
         """

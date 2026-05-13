@@ -440,7 +440,8 @@ class TestBroadcastSayUtterance:
             assert d.history[0].speaker_id == ROBOT_SPEAKER_ID
 
     def test_broadcast_skips_absent_person_dialogues(self):
-        """A person dialogue whose interlocutor is absent is skipped.
+        """
+        A person dialogue whose interlocutor is absent is skipped.
 
         Group dialogues remain — group "absence" is handled by dispersal,
         not by the presence query.
@@ -558,7 +559,8 @@ class TestAddressedSayFanOut:
             assert d.history[0].speaker_id == ROBOT_SPEAKER_ID
 
     def test_addressed_say_skips_absent_co_member(self):
-        """An addressed Say skips co-member dialogues whose interlocutor is absent.
+        """
+        An addressed Say skips co-member dialogues whose interlocutor is absent.
 
         Group dialogues remain — only person dialogues participate in
         presence-driven filtering.

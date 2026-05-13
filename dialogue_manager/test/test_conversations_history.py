@@ -304,7 +304,8 @@ class TestSessionUtterancesPersistence:
         assert history[0] is d
 
     def test_archived_active_dialogue_continues_to_grow_on_disk(self, tmp_path):
-        """An archived in-progress dialogue picks up new utterances on resave.
+        """
+        An archived in-progress dialogue picks up new utterances on resave.
 
         Bucket entries are references to the live Dialogue object, so
         appending an utterance after archive() makes the next save()

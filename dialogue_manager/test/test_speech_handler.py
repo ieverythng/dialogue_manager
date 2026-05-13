@@ -480,7 +480,8 @@ class TestSpeechHandlerGroupRouting:
         assert len(self.mock_dialogue_manager.active_dialogues) == 1
 
     def test_untracked_co_member_dialogue_does_not_receive_speech(self):
-        """An untracked co-member's dialogue is skipped during fan-out.
+        """
+        An untracked co-member's dialogue is skipped during fan-out.
 
         Alice and Bob are co-members per the GroupHandler; both speak so
         both have dialogues. When Alice's voice stops being tracked, a

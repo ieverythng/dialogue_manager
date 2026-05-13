@@ -87,7 +87,8 @@ class SpeechHandler:
         self._chatbot_enabled = enabled
 
     def set_default_chat(self, role_name: str, role_config: str = '{}') -> None:
-        """Enable per-person default-chat auto-spawning with the given role.
+        """
+        Enable per-person default-chat auto-spawning with the given role.
 
         Pass an empty `role_name` to disable.
         """
@@ -140,7 +141,8 @@ class SpeechHandler:
         self._tracked_voices = current_voices
 
     def is_voice_tracked(self, voice_id: str) -> bool:
-        """Return True if `voice_id` is currently in /humans/voices/tracked.
+        """
+        Return True if `voice_id` is currently in /humans/voices/tracked.
 
         This is the canonical "is this person present" query. The
         SkillServers consult it via the `presence_query` callable to
@@ -203,7 +205,8 @@ class SpeechHandler:
         self._publish_raw_intent(msg.final, voice_id, msg.locale)
 
     def _recipient_dialogues_for_speaker(self, voice_id: str) -> list[Dialogue]:
-        """Return every dialogue that should receive `voice_id`'s utterance.
+        """
+        Return every dialogue that should receive `voice_id`'s utterance.
 
         Walks the interlocutor fan-out graph from the speaker. Missing
         person/group dialogues are auto-spawned when default-chat is
@@ -238,7 +241,8 @@ class SpeechHandler:
     # ------------------------------------------------------------ spawning
 
     def _get_or_spawn_person_dialogue(self, person_id: str) -> Dialogue | None:
-        """Return the active person dialogue for `person_id`, spawning if needed.
+        """
+        Return the active person dialogue for `person_id`, spawning if needed.
 
         Returns None if default-chat is disabled and no dialogue exists.
         Spawned person dialogues attach to the chatbot (async) when one is
@@ -257,7 +261,8 @@ class SpeechHandler:
         )
 
     def _get_or_spawn_group_dialogue(self, group_id: str) -> Dialogue | None:
-        """Return the active group dialogue, spawning if needed.
+        """
+        Return the active group dialogue, spawning if needed.
 
         Group dialogues are observational containers — no chatbot is
         attached (the chatbot is a per-person conversation partner).

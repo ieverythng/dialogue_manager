@@ -236,7 +236,8 @@ class SkillServers:
         return GoalResponse.ACCEPT
 
     def _say_goal_callback(self, goal_request) -> GoalResponse:
-        """Accept or reject Say goals based on state and expression priority.
+        """
+        Accept or reject Say goals based on state and expression priority.
 
         Say competes with whatever expression is currently speaking, not
         with active dialogue priorities — a Say can speak alongside any
@@ -268,7 +269,8 @@ class SkillServers:
     # =========================================================================
 
     async def _execute_chat(self, goal_handle) -> Chat.Result:
-        """Execute Chat action.
+        """
+        Execute Chat action.
 
         Works with or without a chatbot backend. Without a chatbot the
         Dialogue is a passive container: user utterances are recorded by the
@@ -379,7 +381,8 @@ class SkillServers:
     # =========================================================================
 
     async def _execute_ask(self, goal_handle) -> Ask.Result:
-        """Execute Ask action.
+        """
+        Execute Ask action.
 
         With a chatbot: speaks the question, hands schema validation off to
         the chatbot, returns schema-shaped answers.
@@ -496,7 +499,8 @@ class SkillServers:
         dialogue: Dialogue,
         result: Ask.Result,
     ) -> None:
-        """Wait up to ASK_TIMEOUT_SEC for the next user utterance.
+        """
+        Wait up to ASK_TIMEOUT_SEC for the next user utterance.
 
         Treats the first non-robot utterance recorded against this dialogue
         as the answer. Times out silently with empty `answers` if no
@@ -632,7 +636,8 @@ class SkillServers:
     def _record_say_utterance(
         self, interlocutor: Interlocutor, raw_input: str
     ) -> None:
-        """Record a Say utterance against an addressed interlocutor.
+        """
+        Record a Say utterance against an addressed interlocutor.
 
         When the addressed entity (person or group) has at least one
         active dialogue, the utterance lands in that dialogue plus every
@@ -676,7 +681,8 @@ class SkillServers:
     def _active_recipients_for(
         self, interlocutor: Interlocutor
     ) -> list[Dialogue]:
-        """Return every active dialogue that should receive an utterance.
+        """
+        Return every active dialogue that should receive an utterance.
 
         Walks the interlocutor fan-out graph and yields the existing
         active dialogue for each related interlocutor (no spawning).
@@ -694,7 +700,8 @@ class SkillServers:
         return result
 
     def _broadcast_say_utterance(self, raw_input: str) -> None:
-        """Record a Say utterance against every active bound dialogue.
+        """
+        Record a Say utterance against every active bound dialogue.
 
         Used when the Say goal carries no specific person/group: the
         robot spoke this aloud, so anyone currently being engaged

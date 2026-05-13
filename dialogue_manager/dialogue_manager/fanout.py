@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Interlocutor fan-out: the graph of "who else hears this utterance."
+"""
+Interlocutor fan-out graph traversal helpers.
 
 Both speech-time recording (`SpeechHandler`) and Say-time recording
 (`SkillServers`) need to walk the same graph from a given Interlocutor:
@@ -35,7 +36,8 @@ from .dialogue import Dialogue, Interlocutor
 def related_interlocutors(
     interlocutor: Interlocutor, group_handler
 ) -> Iterator[Interlocutor]:
-    """Yield interlocutors related to `interlocutor`, primary first.
+    """
+    Yield interlocutors related to `interlocutor`, primary first.
 
     Order:
       1. The interlocutor themselves (if bound).
@@ -81,7 +83,8 @@ def related_interlocutors(
 def is_dialogue_present(
     dialogue: Dialogue, presence_query
 ) -> bool:
-    """True if `dialogue` should accept fan-out under the given query.
+    """
+    Return True if `dialogue` should accept fan-out under the given query.
 
     Group dialogues are always considered present — group "absence" is
     signalled by dispersal (the dialogue is finalised). Person

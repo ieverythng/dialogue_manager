@@ -205,7 +205,8 @@ class DialogueManager:
 
     @property
     def current_max_priority(self) -> int:
-        """Return the overall max priority (dialogues + expressions).
+        """
+        Return the overall max priority (dialogues + expressions).
 
         Useful for diagnostics / display. Not used for goal acceptance —
         Chat/Ask vs Say have distinct gating rules, see
@@ -217,7 +218,8 @@ class DialogueManager:
         )
 
     def can_start_dialogue(self, priority: int) -> bool:
-        """Return True if a *new* Chat/Ask goal at `priority` can be accepted.
+        """
+        Return True if a *new* Chat/Ask goal at `priority` can be accepted.
 
         Preemption rule: a new dialogue must be strictly higher than the
         highest-priority dialogue currently active. Does NOT consider the
@@ -226,7 +228,8 @@ class DialogueManager:
         return priority > self.max_active_dialogue_priority
 
     def can_speak(self, priority: int) -> bool:
-        """Return True if a Say (or other expression) at `priority` can speak.
+        """
+        Return True if a Say (or other expression) at `priority` can speak.
 
         Cooperative rule: an expression must be at least as high as the
         expression that's currently speaking. Dialogue priorities don't
@@ -237,7 +240,8 @@ class DialogueManager:
     def set_change_callback(
         self, callback: Callable[[str | None], None] | None
     ) -> None:
-        """Register an observer fired when manager state changes.
+        """
+        Register an observer fired when manager state changes.
 
         Existing tracked dialogues have their `_change_callback` wired in
         immediately so utterance additions also propagate.

@@ -434,7 +434,8 @@ class DialogueManagerNode(LifecycleNode):
         return super().on_deactivate(state)
 
     def _persist_conversations(self) -> None:
-        """Snapshot active bound dialogues into the store, then save to disk.
+        """
+        Snapshot active bound dialogues into the store, then save to disk.
 
         Without the snapshot step, long-lived dialogues never reach
         disk between activate and deactivate (the store only contains
