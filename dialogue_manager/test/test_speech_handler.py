@@ -472,6 +472,46 @@ class TestSpeechHandlerGroupRouting:
         # Only one dialogue total.
         assert len(self.mock_dialogue_manager.active_dialogues) == 1
 
+    def test_untracked_co_member_dialogue_does_not_receive_speech(self):
+        """An untracked co-member's dialogue is skipped during fan-out.
+
+        Alice and Bob are co-members per the GroupHandler; both speak so
+        both have dialogues. When Alice's voice stops being tracked, a
+        subsequent utterance from Bob must NOT land in Alice's dialogue
+        (she's left, even though the group_handler may still report
+        them as co-members until the group message updates).
+        """
+        tracked = IdsList()
+        tracked.ids = ['alice', 'bob']
+        self.handler._on_voices_tracked(tracked)
+
+        msg_a = LiveSpeech()
+        msg_a.final = 'hi from alice'
+        self.handler._on_speech('alice', msg_a)
+
+        alice_d = self.mock_dialogue_manager.get_dialogue_for_interlocutor(
+            Interlocutor(person_id='alice')
+        )
+        assert alice_d is not None
+        baseline = len(alice_d.history)
+
+        # Alice's voice drops. Bob still tracked, group_handler still
+        # treats them as co-members.
+        only_bob = IdsList()
+        only_bob.ids = ['bob']
+        self.handler._on_voices_tracked(only_bob)
+
+        msg_b = LiveSpeech()
+        msg_b.final = 'is anyone there?'
+        self.handler._on_speech('bob', msg_b)
+
+        # Alice's dialogue unchanged; Bob's records the new utterance.
+        assert len(alice_d.history) == baseline
+        bob_d = self.mock_dialogue_manager.get_dialogue_for_interlocutor(
+            Interlocutor(person_id='bob')
+        )
+        assert any(u.text == 'is anyone there?' for u in bob_d.history)
+
     def test_leaving_voice_pauses_dialogue(self):
         """When a voice disappears, its person dialogue is flipped to paused."""
         self.group_handler.groups_containing.side_effect = lambda pid: []

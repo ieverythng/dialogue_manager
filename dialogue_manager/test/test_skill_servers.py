@@ -445,6 +445,38 @@ class TestBroadcastSayUtterance:
             assert d.history[0].text == 'Hello group'
             assert d.history[0].speaker_id == ROBOT_SPEAKER_ID
 
+    def test_broadcast_skips_absent_person_dialogues(self):
+        """A person dialogue whose interlocutor is absent is skipped.
+
+        Group dialogues remain — group "absence" is handled by dispersal,
+        not by the presence flag.
+        """
+        dm, servers = self._build()
+        alice = Dialogue(
+            role=DialogueRole(name='__default__'),
+            interlocutor=Interlocutor(person_id='alice'),
+            state=DialogueState.ACTIVE,
+        )
+        bob = Dialogue(
+            role=DialogueRole(name='__default__'),
+            interlocutor=Interlocutor(person_id='bob'),
+            state=DialogueState.ACTIVE,
+        )
+        group_a = Dialogue(
+            role=DialogueRole(name='__default__'),
+            interlocutor=Interlocutor(group_id='group_a'),
+            state=DialogueState.ACTIVE,
+        )
+        alice.interlocutor_present = False
+        for d in (alice, bob, group_a):
+            dm.add_dialogue(d)
+
+        servers._broadcast_say_utterance('Hello room')
+
+        assert alice.history == []
+        assert len(bob.history) == 1
+        assert len(group_a.history) == 1
+
 
 class TestAddressedSayFanOut:
     """A Say addressed to a person or group fans out to related dialogues."""
@@ -531,6 +563,52 @@ class TestAddressedSayFanOut:
             assert len(d.history) == 1
             assert d.history[0].text == 'Hi Alice'
             assert d.history[0].speaker_id == ROBOT_SPEAKER_ID
+
+    def test_addressed_say_skips_absent_co_member(self):
+        """An addressed Say skips co-member dialogues whose interlocutor is absent.
+
+        Group dialogues remain — only person dialogues participate in
+        presence-driven filtering.
+        """
+        from dialogue_manager.dialogue import ROBOT_SPEAKER_ID
+        gh = MagicMock()
+        gh.groups_containing.side_effect = (
+            lambda pid: ['group_a'] if pid in ('alice', 'bob') else []
+        )
+        gh.co_members_of.side_effect = (
+            lambda pid: {'bob'} if pid == 'alice'
+            else {'alice'} if pid == 'bob' else set()
+        )
+        dm, servers = self._build(group_handler=gh)
+        alice = Dialogue(
+            role=DialogueRole(name='__default__'),
+            interlocutor=Interlocutor(person_id='alice'),
+            state=DialogueState.ACTIVE,
+        )
+        bob = Dialogue(
+            role=DialogueRole(name='__default__'),
+            interlocutor=Interlocutor(person_id='bob'),
+            state=DialogueState.ACTIVE,
+        )
+        group_a = Dialogue(
+            role=DialogueRole(name='__default__'),
+            interlocutor=Interlocutor(group_id='group_a'),
+            state=DialogueState.ACTIVE,
+        )
+        # Bob has left.
+        bob.interlocutor_present = False
+        for d in (alice, bob, group_a):
+            dm.add_dialogue(d)
+
+        servers._record_say_utterance(
+            Interlocutor(person_id='alice'), 'Hi Alice'
+        )
+
+        assert len(alice.history) == 1
+        assert alice.history[0].speaker_id == ROBOT_SPEAKER_ID
+        assert len(group_a.history) == 1
+        # Bob is absent; his dialogue must not collect the utterance.
+        assert bob.history == []
 
     def test_no_active_dialogue_falls_back_to_synthetic(self):
         """When nothing is active for the target, a synthetic gets archived."""
