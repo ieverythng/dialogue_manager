@@ -2,8 +2,8 @@
 Changelog for package dialogue_manager
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
+2.1.0 (2026-05-13)
+------------------
 * chatbot: queue first-utterance speech across async attach
   attach_to_dialogue() dispatches the chatbot goal asynchronously, so on
   the first utterance from a new speaker chatbot_goal_id was still None
