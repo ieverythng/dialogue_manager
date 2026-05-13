@@ -27,6 +27,7 @@ from rclpy.subscription import Subscription
 from .chatbot_client import ChatbotClient
 from .conversations_history import ConversationsHistoryStore
 from .dialogue import Dialogue, DialogueManager, DialogueState, Interlocutor
+from .fanout import related_interlocutors
 from .group_handler import GroupHandler
 
 
@@ -204,34 +205,35 @@ class SpeechHandler:
     def _recipient_dialogues_for_speaker(self, voice_id: str) -> list[Dialogue]:
         """Return every dialogue that should receive `voice_id`'s utterance.
 
-        Order is: speaker → groups → co-members. Auto-spawns missing
-        dialogues if default-chat is enabled. Co-members whose own voice
-        is no longer tracked are skipped (they're not currently here).
+        Walks the interlocutor fan-out graph from the speaker. Missing
+        person/group dialogues are auto-spawned when default-chat is
+        enabled. Co-members whose voice is no longer tracked are
+        skipped *before* spawn so we don't materialise dialogues for
+        people who have already left.
         """
-        speaker_dialogue = self._get_or_spawn_person_dialogue(voice_id)
-        result: list[Dialogue] = [speaker_dialogue] if speaker_dialogue else []
-
-        if self._group_handler is None:
-            return result
-
-        for group_id in self._group_handler.groups_containing(voice_id):
-            gd = self._get_or_spawn_group_dialogue(group_id)
-            if gd is not None and gd not in result:
-                result.append(gd)
-
-        for co_member_id in self._group_handler.co_members_of(voice_id):
-            # Skip co-members whose voice is no longer tracked — they've
-            # left even if the group_handler hasn't caught up yet. Skip
-            # before spawning so we don't create a dialogue for someone
-            # who isn't here.
-            if not self.is_voice_tracked(co_member_id):
+        result: list[Dialogue] = []
+        speaker_il = Interlocutor(person_id=voice_id)
+        for it in related_interlocutors(speaker_il, self._group_handler):
+            # Filter absent co-members before spawn. Don't filter the
+            # speaker — they just spoke, presence is implicit. Group
+            # dialogues are never gated on voice tracking.
+            if (it.person_id and it.person_id != voice_id
+                    and not self.is_voice_tracked(it.person_id)):
                 continue
-            pd = self._get_or_spawn_person_dialogue(co_member_id)
-            if pd is None or pd in result:
-                continue
-            result.append(pd)
-
+            d = self._get_or_spawn_dialogue_for(it)
+            if d is not None and d not in result:
+                result.append(d)
         return result
+
+    def _get_or_spawn_dialogue_for(
+        self, interlocutor: Interlocutor
+    ) -> Dialogue | None:
+        """Route to the right spawn helper based on interlocutor kind."""
+        if interlocutor.is_group:
+            return self._get_or_spawn_group_dialogue(interlocutor.group_id)
+        if interlocutor.person_id:
+            return self._get_or_spawn_person_dialogue(interlocutor.person_id)
+        return None
 
     # ------------------------------------------------------------ spawning
 

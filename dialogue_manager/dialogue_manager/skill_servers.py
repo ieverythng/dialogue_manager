@@ -38,6 +38,7 @@ from .dialogue import (
     SAY_ROLE_NAME,
 )
 from .dialogue_lifecycle import DialogueLifecycle
+from .fanout import is_dialogue_present, related_interlocutors
 from .markup.executor import ExpressionExecutor
 from .say_client import SayClient
 
@@ -119,17 +120,8 @@ class SkillServers:
             return []
 
     def _is_present(self, dialogue: Dialogue) -> bool:
-        """Return True if `dialogue`'s interlocutor should accept fan-out.
-
-        Group dialogues are always considered present — group "absence"
-        is signalled by dispersal (the dialogue is finalised). For person
-        dialogues, defers to the configured presence query.
-        """
-        if dialogue.interlocutor.is_group:
-            return True
-        if not dialogue.interlocutor.person_id:
-            return True
-        return self._presence_query(dialogue.interlocutor.person_id)
+        """Return True if `dialogue`'s interlocutor should accept fan-out."""
+        return is_dialogue_present(dialogue, self._presence_query)
 
     def _preload_summary(self, dialogue: Dialogue) -> None:
         """Pre-fill `dialogue.history` with prior summary, if any."""
@@ -686,44 +678,19 @@ class SkillServers:
     ) -> list[Dialogue]:
         """Return every active dialogue that should receive an utterance.
 
-        For a group: the group's dialogue + every member's per-person
-        dialogue. For a person: the person's dialogue + every group
-        they're in + every co-member's dialogue. Only returns dialogues
-        that are already active — no auto-spawning here.
+        Walks the interlocutor fan-out graph and yields the existing
+        active dialogue for each related interlocutor (no spawning).
+        Absent person dialogues are filtered out; group dialogues are
+        always included.
         """
         result: list[Dialogue] = []
-        primary = self._dialogue_manager.get_dialogue_for_interlocutor(
-            interlocutor
-        )
-        if primary is not None and self._is_present(primary):
-            result.append(primary)
-
-        if interlocutor.is_group:
-            for member_id in self._resolve_group_members(interlocutor.group_id):
-                d = self._dialogue_manager.get_dialogue_for_interlocutor(
-                    Interlocutor(person_id=member_id)
-                )
-                if d is not None and d not in result and self._is_present(d):
-                    result.append(d)
-            return result
-
-        if interlocutor.person_id and self._group_handler is not None:
-            for group_id in self._group_handler.groups_containing(
-                interlocutor.person_id
-            ):
-                d = self._dialogue_manager.get_dialogue_for_interlocutor(
-                    Interlocutor(group_id=group_id)
-                )
-                if d is not None and d not in result and self._is_present(d):
-                    result.append(d)
-            for co_member_id in self._group_handler.co_members_of(
-                interlocutor.person_id
-            ):
-                d = self._dialogue_manager.get_dialogue_for_interlocutor(
-                    Interlocutor(person_id=co_member_id)
-                )
-                if d is not None and d not in result and self._is_present(d):
-                    result.append(d)
+        for it in related_interlocutors(interlocutor, self._group_handler):
+            d = self._dialogue_manager.get_dialogue_for_interlocutor(it)
+            if d is None or d in result:
+                continue
+            if not self._is_present(d):
+                continue
+            result.append(d)
         return result
 
     def _broadcast_say_utterance(self, raw_input: str) -> None:
