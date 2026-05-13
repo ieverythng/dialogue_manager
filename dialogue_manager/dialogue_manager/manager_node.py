@@ -29,6 +29,7 @@ from .chatbot_client import ChatbotClient
 from .conversations_history import ConversationsHistoryStore
 from .debug_publisher import DebugStatePublisher
 from .dialogue import DialogueManager, DialogueState, Interlocutor
+from .dialogue_lifecycle import DialogueLifecycle
 from .group_handler import GroupHandler
 from .markup import ActionLibrary, ExpressionExecutor
 from .say_client import SayClient
@@ -71,6 +72,7 @@ class DialogueManagerNode(LifecycleNode):
         self._expression_executor: ExpressionExecutor | None = None
         self._debug_publisher: DebugStatePublisher | None = None
         self._group_handler: GroupHandler | None = None
+        self._lifecycle: DialogueLifecycle | None = None
 
         # Publishers (created in on_configure)
         self._closed_captions_pub = None
@@ -276,6 +278,16 @@ class DialogueManagerNode(LifecycleNode):
         self._speech_handler.set_chatbot_enabled(chatbot != '')
         self.get_logger().debug('[CONFIGURE] Speech handler created')
 
+        # Dialogue lifecycle (finalize + archive + summarize). Shared by
+        # SkillServers (Chat/Ask completion) and direct callers below
+        # (group dispersal, deactivation).
+        self._lifecycle = DialogueLifecycle(
+            node=self,
+            dialogue_manager=self._dialogue_manager,
+            conversations_store=self._conversations_store,
+            group_handler=self._group_handler,
+        )
+
         # Create skill servers
         self._skill_servers = SkillServers(
             node=self,
@@ -288,6 +300,7 @@ class DialogueManagerNode(LifecycleNode):
             callback_group=self._callback_group,
             group_handler=self._group_handler,
             presence_query=self._speech_handler.is_voice_tracked,
+            lifecycle=self._lifecycle,
         )
         self._skill_servers.create_servers()
         self.get_logger().debug('[CONFIGURE] Skill servers created')
@@ -403,7 +416,7 @@ class DialogueManagerNode(LifecycleNode):
             if dialogue.state == DialogueState.COMPLETED:
                 continue
             try:
-                self._skill_servers._finalize_and_archive(dialogue)
+                self._lifecycle.finalize_and_archive(dialogue)
             except Exception as exc:
                 self.get_logger().warn(
                     f'[DEACTIVATE] Failed to finalize dialogue '
@@ -507,7 +520,7 @@ class DialogueManagerNode(LifecycleNode):
 
     def _on_group_dispersed(self, group_id: str) -> None:
         """Finalize and archive a dispersed group's dialogue, if any."""
-        if self._skill_servers is None:
+        if self._lifecycle is None:
             return
         dialogue = self._dialogue_manager.get_dialogue_for_interlocutor(
             Interlocutor(group_id=group_id)
@@ -515,7 +528,7 @@ class DialogueManagerNode(LifecycleNode):
         if dialogue is None:
             return
         try:
-            self._skill_servers._finalize_and_archive(dialogue)
+            self._lifecycle.finalize_and_archive(dialogue)
         except Exception as exc:
             self.get_logger().warn(
                 f'[GROUPS] Failed to finalize group {group_id} dialogue: {exc}'

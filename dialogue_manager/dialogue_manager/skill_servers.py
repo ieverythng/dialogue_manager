@@ -14,8 +14,7 @@
 
 """Skill action servers for the Dialogue Manager."""
 
-import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 import json
 import threading
 import time
@@ -38,6 +37,7 @@ from .dialogue import (
     ROBOT_SPEAKER_ID,
     SAY_ROLE_NAME,
 )
+from .dialogue_lifecycle import DialogueLifecycle
 from .markup.executor import ExpressionExecutor
 from .say_client import SayClient
 
@@ -54,25 +54,6 @@ Defaults to "always present" so test setups that don't wire a
 SpeechHandler retain the pre-refactor behaviour. Production code wires
 `SpeechHandler.is_voice_tracked` in.
 """
-
-Summarizer = Callable[[Dialogue, list[Dialogue]], Awaitable[str]]
-"""Async callable that produces a summary text for a finished dialogue.
-
-Called at session end with the current dialogue and the list of prior
-archived dialogues for the same interlocutor (chronological, oldest first).
-Implementations are free to consult the prior dialogues to produce a
-cumulative summary, or to ignore them.
-"""
-
-
-async def default_summarizer(
-    dialogue: Dialogue, prior_dialogues: list[Dialogue]
-) -> str:
-    """Trivial summarizer: render the session's utterances as plain text."""
-    lines = []
-    for utt in dialogue.session_utterances:
-        lines.append(f'{utt.speaker_id}: {utt.text}')
-    return '\n'.join(lines)
 
 
 class SkillServers:
@@ -92,9 +73,9 @@ class SkillServers:
         expression_executor: ExpressionExecutor | None = None,
         closed_captions_pub: Publisher | None = None,
         callback_group: ReentrantCallbackGroup | None = None,
-        summarizer: Summarizer | None = None,
         group_handler=None,  # GroupHandler | None — avoid circular import
         presence_query: PresenceQuery | None = None,
+        lifecycle: DialogueLifecycle | None = None,
     ):
         """Initialize skill servers."""
         self._node = node
@@ -105,9 +86,17 @@ class SkillServers:
         self._expression_executor = expression_executor
         self._closed_captions_pub = closed_captions_pub
         self._callback_group = callback_group
-        self._summarizer: Summarizer = summarizer or default_summarizer
         self._group_handler = group_handler
         self._presence_query: PresenceQuery = presence_query or (lambda _pid: True)
+        # Lifecycle helper owns "session end" (finalize + archive + summarize).
+        # If the caller didn't supply one, build a local instance so unit
+        # tests that exercise skill execution don't need the extra wiring.
+        self._lifecycle = lifecycle or DialogueLifecycle(
+            node=node,
+            dialogue_manager=dialogue_manager,
+            conversations_store=conversations_store,
+            group_handler=group_handler,
+        )
 
         self._chat_server: ActionServer | None = None
         self._ask_server: ActionServer | None = None
@@ -141,61 +130,6 @@ class SkillServers:
         if not dialogue.interlocutor.person_id:
             return True
         return self._presence_query(dialogue.interlocutor.person_id)
-
-    def _finalize_and_archive(self, dialogue: Dialogue) -> None:
-        """Mark a dialogue completed, archive it, and remove it from tracking.
-
-        Summarization runs asynchronously in a daemon thread so the calling
-        coroutine isn't blocked by a slow (e.g. LLM-backed) summarizer. The
-        summary lands on `dialogue.summary` when ready and is picked up by the
-        next periodic persistence tick.
-        """
-        dialogue.state = DialogueState.COMPLETED
-        dialogue.ended_at = self._now()
-        members = (
-            self._resolve_group_members(dialogue.interlocutor.group_id)
-            if dialogue.interlocutor.is_group
-            else None
-        )
-        # Snapshot prior dialogues BEFORE archive(), so the summarizer sees
-        # only past sessions (not the one being summarized).
-        prior_dialogues: list[Dialogue] = []
-        if dialogue.interlocutor.is_bound and dialogue.session_utterances:
-            prior_dialogues = self._conversations_store.history_for(
-                dialogue.interlocutor
-            )
-        self._conversations_store.archive(dialogue, group_members=members)
-        self._dialogue_manager.remove_dialogue(dialogue.dialogue_id)
-
-        # Kick off async summarization (no-op if nothing to summarize).
-        if dialogue.interlocutor.is_bound and dialogue.session_utterances:
-            self._kick_off_summarization(dialogue, prior_dialogues)
-
-    def _kick_off_summarization(
-        self, dialogue: Dialogue, prior_dialogues: list[Dialogue]
-    ) -> None:
-        """Run the summarizer for `dialogue` in a daemon thread."""
-        def runner():
-            try:
-                summary = asyncio.run(
-                    self._summarizer(dialogue, prior_dialogues)
-                )
-            except Exception as exc:
-                self._node.get_logger().warn(
-                    f'[SKILLS] Summarizer failed for dialogue '
-                    f'{dialogue.dialogue_id}: {exc}'
-                )
-                return
-            dialogue.summary = summary
-            dialogue.summary_generated_at = self._now()
-            # The archived dialogue lives in the conversations store; notify
-            # observers so the snapshot reflects the freshly-landed summary.
-            self._dialogue_manager.notify_change(dialogue.dialogue_id)
-            self._node.get_logger().debug(
-                f'[SKILLS] Summary stored for dialogue {dialogue.dialogue_id}'
-            )
-
-        threading.Thread(target=runner, daemon=True).start()
 
     def _preload_summary(self, dialogue: Dialogue) -> None:
         """Pre-fill `dialogue.history` with prior summary, if any."""
@@ -436,7 +370,7 @@ class SkillServers:
             chatbot_handle.cancel_goal_async()
 
         # Mark completed, archive, summarize, and clean up tracking.
-        self._finalize_and_archive(dialogue)
+        self._lifecycle.finalize_and_archive(dialogue)
 
         if goal_handle.is_cancel_requested:
             self._node.get_logger().info('[CHAT] Cancelled by caller')
@@ -532,7 +466,7 @@ class SkillServers:
         else:
             self._await_raw_ask_answer(goal_handle, dialogue, result)
 
-        self._finalize_and_archive(dialogue)
+        self._lifecycle.finalize_and_archive(dialogue)
 
         if goal_handle.is_cancel_requested:
             if chatbot_handle is not None:

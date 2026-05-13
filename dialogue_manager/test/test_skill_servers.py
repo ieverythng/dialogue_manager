@@ -14,7 +14,6 @@
 
 """Unit tests for skill_servers.py with mocked ROS2 dependencies."""
 
-import time
 from unittest.mock import MagicMock, patch
 
 from chatbot_msgs.msg import DialogueRole
@@ -27,7 +26,7 @@ from dialogue_manager.dialogue import (
     SESSION_BREAK_SPEAKER_ID,
     SUMMARY_SPEAKER_ID,
 )
-from dialogue_manager.skill_servers import default_summarizer, SkillServers
+from dialogue_manager.skill_servers import SkillServers
 
 
 def _group_handler_with_members(mapping: dict[str, list[str]]) -> MagicMock:
@@ -652,7 +651,6 @@ def _build_servers(
     dialogue_manager=None,
     chatbot_client=None,
     conversations_store=None,
-    summarizer=None,
 ):
     """Build a SkillServers wired with mocks for the tests below."""
     mock_node = MagicMock()
@@ -664,22 +662,7 @@ def _build_servers(
         say_client=MagicMock(),
         conversations_store=conversations_store or ConversationsHistoryStore(),
         closed_captions_pub=MagicMock(),
-        summarizer=summarizer,
     )
-
-
-class TestDefaultSummarizer:
-    """The built-in fallback summarizer must run without an LLM."""
-
-    def test_renders_session_utterances(self):
-        """default_summarizer returns the session's utterances as text."""
-        import asyncio
-        d = Dialogue(role=DialogueRole(name='test'))
-        d.add_utterance('alice', 'hi', 1.0)
-        d.add_utterance('__myself__', 'hello', 2.0)
-        out = asyncio.run(default_summarizer(d, []))
-        assert 'alice: hi' in out
-        assert '__myself__: hello' in out
 
 
 class TestPreloadSummary:
@@ -763,66 +746,3 @@ class TestPreloadSummary:
         )
         servers._preload_summary(d)
         assert d.history[0].text == 'newer'
-
-
-class TestFinalizeAndArchive:
-    """Async summarizer fires from _finalize_and_archive."""
-
-    def test_archives_and_invokes_summarizer(self):
-        store = ConversationsHistoryStore()
-        captured = {}
-
-        async def my_summarizer(dialogue, prior_dialogues):
-            captured['prior_count'] = len(prior_dialogues)
-            captured['utt_count'] = len(dialogue.session_utterances)
-            return 'cumulative summary'
-
-        servers = _build_servers(
-            conversations_store=store,
-            summarizer=my_summarizer,
-        )
-
-        d = Dialogue(
-            role=DialogueRole(name='test'),
-            interlocutor=Interlocutor(person_id='alice'),
-            state=DialogueState.ACTIVE,
-        )
-        d.add_utterance('alice', 'hello', 1.0)
-        servers._dialogue_manager.add_dialogue(d)
-
-        # The dialogue is a dataclass — summary is a regular attribute. Spin
-        # until the daemon thread populates it.
-        servers._finalize_and_archive(d)
-
-        # Archive happened synchronously.
-        assert store.history_for(Interlocutor(person_id='alice')) == [d]
-        assert d.state == DialogueState.COMPLETED
-
-        # Summary lands asynchronously — give it up to 2s.
-        deadline = time.monotonic() + 2.0
-        while d.summary is None and time.monotonic() < deadline:
-            time.sleep(0.02)
-        assert d.summary == 'cumulative summary'
-        assert captured['utt_count'] == 1
-        # No prior dialogues for alice before this one.
-        assert captured['prior_count'] == 0
-
-    def test_default_summarizer_runs_when_none_provided(self):
-        store = ConversationsHistoryStore()
-        servers = _build_servers(conversations_store=store)
-
-        d = Dialogue(
-            role=DialogueRole(name='test'),
-            interlocutor=Interlocutor(person_id='alice'),
-            state=DialogueState.ACTIVE,
-        )
-        d.add_utterance('alice', 'hi', 1.0)
-        servers._dialogue_manager.add_dialogue(d)
-
-        servers._finalize_and_archive(d)
-
-        deadline = time.monotonic() + 2.0
-        while d.summary is None and time.monotonic() < deadline:
-            time.sleep(0.02)
-        assert d.summary is not None
-        assert 'alice: hi' in d.summary
