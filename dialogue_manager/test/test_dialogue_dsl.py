@@ -64,10 +64,6 @@ import pytest
 DSL_DIR = Path(__file__).parent / 'dialogues'
 
 
-def _empty_group_resolver(_gid: str) -> list[str]:
-    return []
-
-
 class _Scenario:
     """Run a single DSL scenario and accumulate assertion failures."""
 
@@ -95,7 +91,6 @@ class _Scenario:
             chatbot_client=None,
             say_client=MagicMock(),
             conversations_store=self.store,
-            group_resolver=self.group_handler.members_of,
             closed_captions_pub=MagicMock(),
             group_handler=self.group_handler,
             presence_query=self.speech_handler.is_voice_tracked,

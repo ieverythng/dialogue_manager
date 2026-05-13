@@ -283,7 +283,6 @@ class DialogueManagerNode(LifecycleNode):
             chatbot_client=self._chatbot_client,
             say_client=self._say_client,
             conversations_store=self._conversations_store,
-            group_resolver=self._resolve_group_members,
             expression_executor=self._expression_executor,
             closed_captions_pub=self._closed_captions_pub,
             callback_group=self._callback_group,

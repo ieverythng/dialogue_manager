@@ -47,9 +47,6 @@ from .say_client import SayClient
 ASK_TIMEOUT_SEC = 5.0
 
 
-GroupResolver = Callable[[str], list[str]]
-"""Callable mapping a group ID to its member person IDs (may return [])."""
-
 PresenceQuery = Callable[[str], bool]
 """Callable returning True when a person ID's voice is currently tracked.
 
@@ -92,7 +89,6 @@ class SkillServers:
         chatbot_client: ChatbotClient | None,
         say_client: SayClient,
         conversations_store: ConversationsHistoryStore,
-        group_resolver: GroupResolver,
         expression_executor: ExpressionExecutor | None = None,
         closed_captions_pub: Publisher | None = None,
         callback_group: ReentrantCallbackGroup | None = None,
@@ -106,7 +102,6 @@ class SkillServers:
         self._chatbot_client = chatbot_client
         self._say_client = say_client
         self._conversations_store = conversations_store
-        self._group_resolver = group_resolver
         self._expression_executor = expression_executor
         self._closed_captions_pub = closed_captions_pub
         self._callback_group = callback_group
@@ -124,11 +119,13 @@ class SkillServers:
         return self._node.get_clock().now().nanoseconds / 1e9
 
     def _resolve_group_members(self, group_id: str) -> list[str]:
+        if self._group_handler is None:
+            return []
         try:
-            return list(self._group_resolver(group_id) or [])
+            return list(self._group_handler.members_of(group_id) or [])
         except Exception as exc:
             self._node.get_logger().warn(
-                f'[SKILLS] group resolver failed for "{group_id}": {exc}'
+                f'[SKILLS] group handler failed for "{group_id}": {exc}'
             )
             return []
 

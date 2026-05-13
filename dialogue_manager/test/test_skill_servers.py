@@ -30,8 +30,11 @@ from dialogue_manager.dialogue import (
 from dialogue_manager.skill_servers import default_summarizer, SkillServers
 
 
-def _empty_group_resolver(_group_id: str) -> list[str]:
-    return []
+def _group_handler_with_members(mapping: dict[str, list[str]]) -> MagicMock:
+    """Return a MagicMock GroupHandler whose `members_of` resolves `mapping`."""
+    gh = MagicMock()
+    gh.members_of.side_effect = lambda gid: list(mapping.get(gid, []))
+    return gh
 
 
 class TestSkillServersInit:
@@ -51,7 +54,6 @@ class TestSkillServersInit:
             chatbot_client=mock_chatbot_client,
             say_client=mock_say_client,
             conversations_store=ConversationsHistoryStore(),
-            group_resolver=_empty_group_resolver,
             closed_captions_pub=mock_captions_pub
         )
 
@@ -69,7 +71,6 @@ class TestSkillServersInit:
             chatbot_client=MagicMock(),
             say_client=MagicMock(),
             conversations_store=ConversationsHistoryStore(),
-            group_resolver=_empty_group_resolver,
             closed_captions_pub=MagicMock()
         )
 
@@ -87,7 +88,6 @@ class TestSkillServersSetActive:
             chatbot_client=MagicMock(),
             say_client=MagicMock(),
             conversations_store=ConversationsHistoryStore(),
-            group_resolver=_empty_group_resolver,
             closed_captions_pub=MagicMock()
         )
 
@@ -103,7 +103,6 @@ class TestSkillServersSetActive:
             chatbot_client=MagicMock(),
             say_client=MagicMock(),
             conversations_store=ConversationsHistoryStore(),
-            group_resolver=_empty_group_resolver,
             closed_captions_pub=MagicMock()
         )
         servers._is_active = True
@@ -125,7 +124,6 @@ class TestSkillServersCreateServers:
             chatbot_client=MagicMock(),
             say_client=MagicMock(),
             conversations_store=ConversationsHistoryStore(),
-            group_resolver=_empty_group_resolver,
             closed_captions_pub=MagicMock()
         )
 
@@ -147,7 +145,6 @@ class TestSkillServersDestroy:
             chatbot_client=MagicMock(),
             say_client=MagicMock(),
             conversations_store=ConversationsHistoryStore(),
-            group_resolver=_empty_group_resolver,
             closed_captions_pub=MagicMock()
         )
 
@@ -182,7 +179,6 @@ class TestSkillServersGoalCallbacks:
             chatbot_client=self.mock_chatbot_client,
             say_client=self.mock_say_client,
             conversations_store=ConversationsHistoryStore(),
-            group_resolver=_empty_group_resolver,
             closed_captions_pub=MagicMock()
         )
 
@@ -266,7 +262,6 @@ class TestSkillServersPriorityRejection:
             chatbot_client=MagicMock(),
             say_client=MagicMock(),
             conversations_store=ConversationsHistoryStore(),
-            group_resolver=_empty_group_resolver,
             closed_captions_pub=MagicMock()
         )
         self.servers._is_active = True
@@ -374,7 +369,6 @@ class TestBroadcastSayUtterance:
             chatbot_client=MagicMock(),
             say_client=MagicMock(),
             conversations_store=ConversationsHistoryStore(),
-            group_resolver=_empty_group_resolver,
             closed_captions_pub=MagicMock(),
             presence_query=presence_query,
         )
@@ -481,7 +475,7 @@ class TestBroadcastSayUtterance:
 class TestAddressedSayFanOut:
     """A Say addressed to a person or group fans out to related dialogues."""
 
-    def _build(self, group_handler=None, group_resolver=None, presence_query=None):
+    def _build(self, group_handler=None, presence_query=None):
         dm = DialogueManager()
         servers = SkillServers(
             node=MagicMock(),
@@ -489,7 +483,6 @@ class TestAddressedSayFanOut:
             chatbot_client=MagicMock(),
             say_client=MagicMock(),
             conversations_store=ConversationsHistoryStore(),
-            group_resolver=group_resolver or _empty_group_resolver,
             closed_captions_pub=MagicMock(),
             group_handler=group_handler,
             presence_query=presence_query,
@@ -499,7 +492,7 @@ class TestAddressedSayFanOut:
     def test_group_say_fans_out_to_members(self):
         from dialogue_manager.dialogue import ROBOT_SPEAKER_ID
         dm, servers = self._build(
-            group_resolver=lambda gid: ['alice', 'bob'] if gid == 'group_a' else []
+            group_handler=_group_handler_with_members({'group_a': ['alice', 'bob']})
         )
         alice = Dialogue(
             role=DialogueRole(name='__default__'),
@@ -616,7 +609,7 @@ class TestAddressedSayFanOut:
     def test_no_active_dialogue_falls_back_to_synthetic(self):
         """When nothing is active for the target, a synthetic gets archived."""
         dm, servers = self._build(
-            group_resolver=lambda gid: ['alice'] if gid == 'group_a' else []
+            group_handler=_group_handler_with_members({'group_a': ['alice']})
         )
         # No active dialogues at all.
         servers._record_say_utterance(
@@ -644,7 +637,6 @@ class TestSkillServersCancelCallback:
             chatbot_client=MagicMock(),
             say_client=MagicMock(),
             conversations_store=ConversationsHistoryStore(),
-            group_resolver=_empty_group_resolver,
             closed_captions_pub=MagicMock()
         )
 
@@ -671,7 +663,6 @@ def _build_servers(
         chatbot_client=chatbot_client,
         say_client=MagicMock(),
         conversations_store=conversations_store or ConversationsHistoryStore(),
-        group_resolver=_empty_group_resolver,
         closed_captions_pub=MagicMock(),
         summarizer=summarizer,
     )
