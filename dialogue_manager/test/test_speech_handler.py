@@ -414,6 +414,13 @@ class TestSpeechHandlerGroupRouting:
             group_handler=self.group_handler,
         )
         self.handler.set_default_chat('__default__')
+        # Match a realistic ROS4HRI flow: both voices are tracked before
+        # they speak. The co-member fan-out skips voices that aren't
+        # tracked, so the group-routing tests need this to model the
+        # "everyone present" scenario.
+        tracked = IdsList()
+        tracked.ids = ['alice', 'bob']
+        self.handler._on_voices_tracked(tracked)
 
     def test_speech_lands_in_speaker_group_and_co_member(self):
         """Alice's utterance lands in Alice + group_a + Bob dialogues."""
@@ -512,55 +519,41 @@ class TestSpeechHandlerGroupRouting:
         )
         assert any(u.text == 'is anyone there?' for u in bob_d.history)
 
-    def test_leaving_voice_pauses_dialogue(self):
-        """When a voice disappears, its person dialogue is flipped to paused."""
+    def test_leaving_voice_reports_untracked(self):
+        """When a voice disappears, is_voice_tracked returns False."""
         self.group_handler.groups_containing.side_effect = lambda pid: []
         self.group_handler.co_members_of.side_effect = lambda pid: set()
-        # Alice gets tracked (in any real run, this precedes her speech).
         tracked = IdsList()
         tracked.ids = ['alice']
         self.handler._on_voices_tracked(tracked)
-        # Alice speaks → her dialogue is spawned.
-        msg = LiveSpeech()
-        msg.final = 'hi'
-        self.handler._on_speech('alice', msg)
-        alice_d = self.mock_dialogue_manager.get_dialogue_for_interlocutor(
-            Interlocutor(person_id='alice')
-        )
-        assert alice_d.interlocutor_present is True
+        assert self.handler.is_voice_tracked('alice') is True
 
         # /humans/voices/tracked drops alice
         empty = IdsList()
         empty.ids = []
         self.handler._on_voices_tracked(empty)
 
-        assert alice_d.interlocutor_present is False
+        assert self.handler.is_voice_tracked('alice') is False
 
-    def test_returning_voice_reactivates_dialogue(self):
-        """A voice reappearing flips the existing dialogue back to present."""
+    def test_returning_voice_is_tracked_again(self):
+        """A voice reappearing makes is_voice_tracked return True again."""
         self.group_handler.groups_containing.side_effect = lambda pid: []
         self.group_handler.co_members_of.side_effect = lambda pid: set()
         tracked = IdsList()
         tracked.ids = ['alice']
         self.handler._on_voices_tracked(tracked)
-        msg = LiveSpeech()
-        msg.final = 'hi'
-        self.handler._on_speech('alice', msg)
-        # Pause alice.
+        # Drop alice.
         empty = IdsList()
         empty.ids = []
         self.handler._on_voices_tracked(empty)
-        alice_d = self.mock_dialogue_manager.get_dialogue_for_interlocutor(
-            Interlocutor(person_id='alice')
-        )
-        assert alice_d.interlocutor_present is False
+        assert self.handler.is_voice_tracked('alice') is False
 
         # Alice's voice returns.
         back = IdsList()
         back.ids = ['alice']
         self.handler._on_voices_tracked(back)
 
-        assert alice_d.interlocutor_present is True
+        assert self.handler.is_voice_tracked('alice') is True
 
 
 class TestSpeechHandlerIntentPublishing:

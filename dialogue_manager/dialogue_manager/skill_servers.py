@@ -50,6 +50,14 @@ ASK_TIMEOUT_SEC = 5.0
 GroupResolver = Callable[[str], list[str]]
 """Callable mapping a group ID to its member person IDs (may return [])."""
 
+PresenceQuery = Callable[[str], bool]
+"""Callable returning True when a person ID's voice is currently tracked.
+
+Defaults to "always present" so test setups that don't wire a
+SpeechHandler retain the pre-refactor behaviour. Production code wires
+`SpeechHandler.is_voice_tracked` in.
+"""
+
 Summarizer = Callable[[Dialogue, list[Dialogue]], Awaitable[str]]
 """Async callable that produces a summary text for a finished dialogue.
 
@@ -90,6 +98,7 @@ class SkillServers:
         callback_group: ReentrantCallbackGroup | None = None,
         summarizer: Summarizer | None = None,
         group_handler=None,  # GroupHandler | None — avoid circular import
+        presence_query: PresenceQuery | None = None,
     ):
         """Initialize skill servers."""
         self._node = node
@@ -103,6 +112,7 @@ class SkillServers:
         self._callback_group = callback_group
         self._summarizer: Summarizer = summarizer or default_summarizer
         self._group_handler = group_handler
+        self._presence_query: PresenceQuery = presence_query or (lambda _pid: True)
 
         self._chat_server: ActionServer | None = None
         self._ask_server: ActionServer | None = None
@@ -121,6 +131,19 @@ class SkillServers:
                 f'[SKILLS] group resolver failed for "{group_id}": {exc}'
             )
             return []
+
+    def _is_present(self, dialogue: Dialogue) -> bool:
+        """Return True if `dialogue`'s interlocutor should accept fan-out.
+
+        Group dialogues are always considered present — group "absence"
+        is signalled by dispersal (the dialogue is finalised). For person
+        dialogues, defers to the configured presence query.
+        """
+        if dialogue.interlocutor.is_group:
+            return True
+        if not dialogue.interlocutor.person_id:
+            return True
+        return self._presence_query(dialogue.interlocutor.person_id)
 
     def _finalize_and_archive(self, dialogue: Dialogue) -> None:
         """Mark a dialogue completed, archive it, and remove it from tracking.
@@ -741,7 +764,7 @@ class SkillServers:
         primary = self._dialogue_manager.get_dialogue_for_interlocutor(
             interlocutor
         )
-        if primary is not None and primary.interlocutor_present:
+        if primary is not None and self._is_present(primary):
             result.append(primary)
 
         if interlocutor.is_group:
@@ -749,8 +772,7 @@ class SkillServers:
                 d = self._dialogue_manager.get_dialogue_for_interlocutor(
                     Interlocutor(person_id=member_id)
                 )
-                if (d is not None and d not in result
-                        and d.interlocutor_present):
+                if d is not None and d not in result and self._is_present(d):
                     result.append(d)
             return result
 
@@ -761,8 +783,7 @@ class SkillServers:
                 d = self._dialogue_manager.get_dialogue_for_interlocutor(
                     Interlocutor(group_id=group_id)
                 )
-                if (d is not None and d not in result
-                        and d.interlocutor_present):
+                if d is not None and d not in result and self._is_present(d):
                     result.append(d)
             for co_member_id in self._group_handler.co_members_of(
                 interlocutor.person_id
@@ -770,8 +791,7 @@ class SkillServers:
                 d = self._dialogue_manager.get_dialogue_for_interlocutor(
                     Interlocutor(person_id=co_member_id)
                 )
-                if (d is not None and d not in result
-                        and d.interlocutor_present):
+                if d is not None and d not in result and self._is_present(d):
                     result.append(d)
         return result
 
@@ -791,7 +811,7 @@ class SkillServers:
             d for d in self._dialogue_manager.active_dialogues.values()
             if d.state in (DialogueState.ACTIVE, DialogueState.WAITING_RESPONSE)
             and d.interlocutor.is_bound
-            and d.interlocutor_present
+            and self._is_present(d)
         ]
         if not active_dialogues:
             self._node.get_logger().debug(

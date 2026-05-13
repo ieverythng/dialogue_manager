@@ -288,6 +288,7 @@ class DialogueManagerNode(LifecycleNode):
             closed_captions_pub=self._closed_captions_pub,
             callback_group=self._callback_group,
             group_handler=self._group_handler,
+            presence_query=self._speech_handler.is_voice_tracked,
         )
         self._skill_servers.create_servers()
         self.get_logger().debug('[CONFIGURE] Skill servers created')

@@ -130,35 +130,23 @@ class SpeechHandler:
                 10
             )
             self._voice_subscriptions[voice_id] = sub
-            # If this voice already has a paused dialogue (they previously
-            # spoke, left, and now returned), reactivate it.
-            self._set_person_presence(voice_id, True)
 
         for voice_id in self._tracked_voices - current_voices:
             if voice_id in self._voice_subscriptions:
                 self._node.destroy_subscription(self._voice_subscriptions.pop(voice_id))
                 self._node.get_logger().info(f'[SPEECH] Unsubscribed from voice {voice_id}')
-            # Mark their dialogue paused so subsequent broadcasts and
-            # co-member fan-out skip it.
-            self._set_person_presence(voice_id, False)
 
         self._tracked_voices = current_voices
 
-    def _set_person_presence(self, voice_id: str, present: bool) -> None:
-        """Update the `interlocutor_present` flag on a person's dialogue."""
-        dialogue = self._dialogue_manager.get_dialogue_for_interlocutor(
-            Interlocutor(person_id=voice_id)
-        )
-        if dialogue is None or dialogue.interlocutor_present == present:
-            return
-        dialogue.interlocutor_present = present
-        self._node.get_logger().info(
-            f'[SPEECH] {voice_id} '
-            f'{"present" if present else "left"} — '
-            f'dialogue {dialogue.dialogue_id} '
-            f'{"reactivated" if present else "paused"}'
-        )
-        self._dialogue_manager.notify_change(dialogue.dialogue_id)
+    def is_voice_tracked(self, voice_id: str) -> bool:
+        """Return True if `voice_id` is currently in /humans/voices/tracked.
+
+        This is the canonical "is this person present" query. The
+        SkillServers consult it via the `presence_query` callable to
+        skip dialogues for people who have left during broadcast and
+        addressed Say fan-out.
+        """
+        return voice_id in self._tracked_voices
 
     def _on_speech(self, voice_id: str, msg: LiveSpeech) -> None:
         """Handle incoming speech from a user."""
@@ -232,12 +220,14 @@ class SpeechHandler:
                 result.append(gd)
 
         for co_member_id in self._group_handler.co_members_of(voice_id):
+            # Skip co-members whose voice is no longer tracked — they've
+            # left even if the group_handler hasn't caught up yet. Skip
+            # before spawning so we don't create a dialogue for someone
+            # who isn't here.
+            if not self.is_voice_tracked(co_member_id):
+                continue
             pd = self._get_or_spawn_person_dialogue(co_member_id)
             if pd is None or pd in result:
-                continue
-            # Skip silent co-members whose interlocutor has left — their
-            # dialogue is paused and shouldn't accumulate utterances.
-            if not pd.interlocutor_present:
                 continue
             result.append(pd)
 

@@ -98,6 +98,7 @@ class _Scenario:
             group_resolver=self.group_handler.members_of,
             closed_captions_pub=MagicMock(),
             group_handler=self.group_handler,
+            presence_query=self.speech_handler.is_voice_tracked,
         )
 
         self.present: set[str] = set()
