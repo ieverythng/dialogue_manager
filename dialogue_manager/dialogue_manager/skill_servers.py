@@ -124,6 +124,19 @@ class SkillServers:
         """Return True if `dialogue`'s interlocutor should accept fan-out."""
         return is_dialogue_present(dialogue, self._presence_query)
 
+    def _inject_group_membership(self, dialogue: Dialogue) -> None:
+        """Prepend a __system__ utterance listing the group's members."""
+        members = self._resolve_group_members(dialogue.interlocutor.group_id)
+        if len(members) <= 1:
+            return
+        names = ', '.join(sorted(members))
+        text = f'You are now in a group conversation with: {names}.'
+        dialogue.add_utterance(SYSTEM_SPEAKER_ID, text, self._now())
+        self._node.get_logger().info(
+            f'[CHAT] Injected group context for {dialogue.dialogue_id}: '
+            f'"{text}"'
+        )
+
     def _preload_summary(self, dialogue: Dialogue) -> None:
         """Pre-fill `dialogue.history` with prior summary, if any."""
         if self._conversations_store.preload_into(dialogue, self._now()):
@@ -288,6 +301,11 @@ class SkillServers:
         self._preload_summary(dialogue)
         self._dialogue_manager.add_dialogue(dialogue)
         self._node.get_logger().info(f'[CHAT] Created dialogue {dialogue.dialogue_id}')
+
+        # For group dialogues, tell the LLM who's in the room. One-shot
+        # snapshot at spawn time.
+        if dialogue.interlocutor.is_group:
+            self._inject_group_membership(dialogue)
 
         if chatbot_available:
             # Optional fire-and-forget warm-up; the chatbot is stateless,

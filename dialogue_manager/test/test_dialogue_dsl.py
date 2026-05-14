@@ -56,6 +56,7 @@ from dialogue_manager.dialogue import (
     DialogueManager,
     DialogueState,
     Interlocutor,
+    SYSTEM_SPEAKER_ID,
 )
 from dialogue_manager.group_handler import GroupHandler
 from dialogue_manager.skill_servers import SkillServers
@@ -402,7 +403,10 @@ class _Scenario:
 
     def _count_history(self, interlocutor: Interlocutor) -> int:
         return sum(
-            len(d.session_utterances)
+            sum(
+                1 for u in d.session_utterances
+                if u.speaker_id != SYSTEM_SPEAKER_ID
+            )
             for d in self._all_dialogues_for(interlocutor)
         )
 
@@ -411,6 +415,7 @@ class _Scenario:
             u.text
             for d in self._all_dialogues_for(interlocutor)
             for u in d.session_utterances
+            if u.speaker_id != SYSTEM_SPEAKER_ID
         )
 
     # ----------------------------------------------- parser

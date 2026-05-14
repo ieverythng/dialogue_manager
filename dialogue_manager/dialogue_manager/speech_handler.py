@@ -26,7 +26,13 @@ from rclpy.subscription import Subscription
 
 from .chatbot_client import ChatbotClient
 from .conversations_history import ConversationsHistoryStore
-from .dialogue import Dialogue, DialogueManager, DialogueState, Interlocutor
+from .dialogue import (
+    Dialogue,
+    DialogueManager,
+    DialogueState,
+    Interlocutor,
+    SYSTEM_SPEAKER_ID,
+)
 from .fanout import related_interlocutors
 from .group_handler import GroupHandler
 
@@ -303,6 +309,11 @@ class SpeechHandler:
             f'[DEFAULT CHAT] Spawned dialogue {dialogue.dialogue_id} for '
             f'{interlocutor.key} (role="{role.name}")'
         )
+        # For group dialogues, tell the LLM who's in the room. One-shot
+        # snapshot at spawn time — mid-session membership changes are
+        # not yet propagated.
+        if interlocutor.is_group:
+            self._inject_group_membership(dialogue, interlocutor.group_id)
         # Fire-and-forget warm-up. The chatbot is stateless: if the
         # warm-up service call fails or arrives late, the first
         # `interact()` will still work — the backend has no per-dialogue
@@ -312,6 +323,23 @@ class SpeechHandler:
                 and self._chatbot_enabled):
             self._chatbot_client.prepare(dialogue)
         return dialogue
+
+    def _inject_group_membership(
+        self, dialogue: Dialogue, group_id: str
+    ) -> None:
+        """Prepend a __system__ utterance listing the group's members."""
+        if self._group_handler is None:
+            return
+        members = self._group_handler.members_of(group_id)
+        if len(members) <= 1:
+            return
+        names = ', '.join(members)
+        text = f'You are now in a group conversation with: {names}.'
+        dialogue.add_utterance(SYSTEM_SPEAKER_ID, text, self._now())
+        self._node.get_logger().info(
+            f'[DEFAULT CHAT] Injected group context for '
+            f'{dialogue.dialogue_id}: "{text}"'
+        )
 
     # ------------------------------------------------------------ helpers
 
