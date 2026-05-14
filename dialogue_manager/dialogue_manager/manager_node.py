@@ -54,7 +54,11 @@ class DialogueManagerNode(LifecycleNode):
 
     def __init__(self) -> None:
         """Construct the node."""
-        super().__init__('dialogue_manager')
+        # enable_logger_service=True exposes ~/get_logger_levels and
+        # ~/set_logger_levels services so log levels (including the
+        # DEBUG dump in chatbot_client.interact()) can be flipped at
+        # runtime without restarting the node.
+        super().__init__('dialogue_manager', enable_logger_service=True)
 
         # Callback group for concurrent action handling
         self._callback_group = ReentrantCallbackGroup()
