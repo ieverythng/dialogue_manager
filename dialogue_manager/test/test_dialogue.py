@@ -116,14 +116,13 @@ class TestDialogue:
         assert dialogue.ended_at is None
         assert dialogue.history == []
         assert dialogue.summary is None
-        assert dialogue.chatbot_goal_id is None
+        assert dialogue.results == ''
         assert dialogue.goal_handle is None
 
     def test_create_full_dialogue(self):
         """Create dialogue with all fields specified."""
         role = DialogueRole(name='full_role')
         dialogue_id = uuid4()
-        chatbot_id = uuid4()
         interlocutor = Interlocutor(person_id='person_123')
 
         dialogue = Dialogue(
@@ -132,8 +131,8 @@ class TestDialogue:
             priority=200,
             state=DialogueState.ACTIVE,
             dialogue_id=dialogue_id,
-            chatbot_goal_id=chatbot_id,
-            goal_handle='mock_handle'
+            results='{"age": 42}',
+            goal_handle='mock_handle',
         )
 
         assert dialogue.role == role
@@ -141,7 +140,7 @@ class TestDialogue:
         assert dialogue.priority == 200
         assert dialogue.state == DialogueState.ACTIVE
         assert dialogue.dialogue_id == dialogue_id
-        assert dialogue.chatbot_goal_id == chatbot_id
+        assert dialogue.results == '{"age": 42}'
         assert dialogue.goal_handle == 'mock_handle'
 
     def test_priority_valid_min(self):

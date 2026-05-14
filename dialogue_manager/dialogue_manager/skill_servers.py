@@ -36,6 +36,7 @@ from .dialogue import (
     Interlocutor,
     ROBOT_SPEAKER_ID,
     SAY_ROLE_NAME,
+    SYSTEM_SPEAKER_ID,
 )
 from .dialogue_lifecycle import DialogueLifecycle
 from .fanout import is_dialogue_present, related_interlocutors
@@ -130,19 +131,6 @@ class SkillServers:
                 f'[SKILLS] Pre-filled dialogue {dialogue.dialogue_id} with '
                 f'prior summary for {dialogue.interlocutor.key}'
             )
-
-    def _inject_initial_context(self, dialogue: Dialogue) -> None:
-        """Build and push the conversation context to the chatbot at start."""
-        if not dialogue.interlocutor.is_bound:
-            return
-        if self._chatbot_client is None:
-            return
-        context = self._conversations_store.build_context(
-            dialogue.interlocutor,
-            now=self._now(),
-        )
-        if context:
-            self._chatbot_client.inject_context(dialogue.dialogue_id, context)
 
     def set_active(self, active: bool) -> None:
         """Set whether the node is in active state."""
@@ -301,21 +289,10 @@ class SkillServers:
         self._dialogue_manager.add_dialogue(dialogue)
         self._node.get_logger().info(f'[CHAT] Created dialogue {dialogue.dialogue_id}')
 
-        chatbot_handle = None
         if chatbot_available:
-            chatbot_handle = await self._chatbot_client.start_dialogue(request.role)
-            if not chatbot_handle:
-                result.result.error_code = 134
-                result.result.error_msg = 'Chatbot rejected dialogue'
-                self._dialogue_manager.remove_dialogue(dialogue.dialogue_id)
-                goal_handle.abort()
-                return result
-            from uuid import UUID as PyUUID
-            chatbot_goal_id = PyUUID(bytes=bytes(chatbot_handle.goal_id.uuid))
-            dialogue.chatbot_goal_id = chatbot_goal_id
-            self._node.get_logger().debug(
-                f'[CHAT] Assigned chatbot_goal_id={chatbot_goal_id} to dialogue'
-            )
+            # Optional fire-and-forget warm-up; the chatbot is stateless,
+            # so a missed prepare is non-fatal.
+            self._chatbot_client.prepare(dialogue)
         else:
             self._node.get_logger().info(
                 '[CHAT] No chatbot available; running as passive dialogue '
@@ -327,9 +304,6 @@ class SkillServers:
         self._dialogue_manager.notify_change(dialogue.dialogue_id)
         self._node.get_logger().info(f'[CHAT] Dialogue {dialogue.dialogue_id} now ACTIVE')
 
-        # Prime the chatbot (no-op if chatbot is absent).
-        self._inject_initial_context(dialogue)
-
         # If initiate=true, generate initial utterance.
         if request.initiate:
             if request.initial_input:
@@ -340,13 +314,40 @@ class SkillServers:
                     person_id=request.person_id,
                     group_id=request.group_id,
                 )
+                # Record into the dialogue history so the next chatbot
+                # turn sees what the robot actually said.
+                plain_text = self._strip_markup(request.initial_input)
+                if plain_text:
+                    dialogue.add_utterance(
+                        ROBOT_SPEAKER_ID, plain_text, self._now(),
+                    )
             elif chatbot_available:
-                self._node.get_logger().info('[CHAT] Requesting chatbot greeting')
-                self._chatbot_client.send_input(
-                    dialogue.dialogue_id,
-                    '__assistant__',
-                    ''  # Empty input triggers generation
+                # Ask the chatbot to open the conversation. Stateless
+                # contract: we add a __system__ entry to the history and
+                # call `interact()` — the chatbot sees the directive in
+                # the message stream and produces a greeting.
+                self._node.get_logger().info(
+                    '[CHAT] Requesting chatbot greeting via __system__ '
+                    'directive'
                 )
+                interlocutor_id = (
+                    dialogue.interlocutor.person_id
+                    or dialogue.interlocutor.group_id
+                    or ''
+                )
+                if interlocutor_id:
+                    instruction = (
+                        f'A person with user_id {interlocutor_id} has just '
+                        'started a conversation with you. Greet them.'
+                    )
+                else:
+                    instruction = (
+                        'A new conversation has just started. Greet the user.'
+                    )
+                dialogue.add_utterance(
+                    SYSTEM_SPEAKER_ID, instruction, self._now(),
+                )
+                self._chatbot_client.interact(dialogue)
             else:
                 self._node.get_logger().info(
                     '[CHAT] initiate=true but no chatbot and no initial_input; '
@@ -360,10 +361,9 @@ class SkillServers:
             if dialogue.state == DialogueState.COMPLETED:
                 break
 
-        if chatbot_handle is not None:
-            chatbot_handle.cancel_goal_async()
-
         # Mark completed, archive, summarize, and clean up tracking.
+        # No chatbot-side cancel needed: the chatbot is stateless and has
+        # no per-dialogue lifecycle to terminate.
         self._lifecycle.finalize_and_archive(dialogue)
 
         if goal_handle.is_cancel_requested:
@@ -424,21 +424,9 @@ class SkillServers:
         # not pre-fill with prior summaries here.
         self._dialogue_manager.add_dialogue(dialogue)
 
-        chatbot_handle = None
         if chatbot_available:
-            chatbot_handle = await self._chatbot_client.start_dialogue(role)
-            if not chatbot_handle:
-                result.result.error_code = 134
-                result.result.error_msg = 'Chatbot rejected dialogue'
-                self._dialogue_manager.remove_dialogue(dialogue.dialogue_id)
-                goal_handle.abort()
-                return result
-            from uuid import UUID as PyUUID
-            chatbot_goal_id = PyUUID(bytes=bytes(chatbot_handle.goal_id.uuid))
-            dialogue.chatbot_goal_id = chatbot_goal_id
-            self._node.get_logger().debug(
-                f'[ASK] Assigned chatbot_goal_id={chatbot_goal_id} to dialogue'
-            )
+            # Optional fire-and-forget warm-up.
+            self._chatbot_client.prepare(dialogue)
 
         dialogue.state = DialogueState.ACTIVE
         self._dialogue_manager.notify_change(dialogue.dialogue_id)
@@ -451,21 +439,17 @@ class SkillServers:
             group_id=request.group_id,
         )
         dialogue.add_utterance(
-            ROBOT_SPEAKER_ID, request.question, self._now()
+            ROBOT_SPEAKER_ID, request.question, self._now(),
         )
 
         if chatbot_available:
-            await self._await_chatbot_ask_answers(
-                goal_handle, dialogue, chatbot_handle, result
-            )
+            self._await_chatbot_ask_answers(goal_handle, dialogue, result)
         else:
             self._await_raw_ask_answer(goal_handle, dialogue, result)
 
         self._lifecycle.finalize_and_archive(dialogue)
 
         if goal_handle.is_cancel_requested:
-            if chatbot_handle is not None:
-                chatbot_handle.cancel_goal_async()
             goal_handle.canceled()
             result.result.error_code = 125
             return result
@@ -473,25 +457,28 @@ class SkillServers:
         goal_handle.succeed()
         return result
 
-    async def _await_chatbot_ask_answers(
+    def _await_chatbot_ask_answers(
         self,
         goal_handle,
         dialogue: Dialogue,
-        chatbot_handle,
         result: Ask.Result,
     ) -> None:
-        """Wait for the chatbot dialogue to complete and capture answers."""
+        """
+        Wait until the chatbot signals dialogue-terminal on this dialogue.
+
+        The chatbot is stateless; it signals `__ask__` completion by
+        returning `dialogue_terminal=True` on a `DialogueInteraction`
+        response, which `ChatbotClient._on_response` translates into
+        `dialogue.state = COMPLETED` + `dialogue.results = <json>`.
+        We just poll for that here.
+        """
         while not goal_handle.is_cancel_requested:
             time.sleep(0.1)
             if dialogue.state == DialogueState.COMPLETED:
                 break
-        try:
-            chatbot_result_future = chatbot_handle.get_result_async()
-            chatbot_result = await chatbot_result_future
-            result.answers = chatbot_result.result.results
+        if dialogue.results:
+            result.answers = dialogue.results
             self._node.get_logger().info(f'[ASK] Got answers: {result.answers}')
-        except Exception as e:
-            self._node.get_logger().warn(f'[ASK] Failed to get results: {e}')
 
     def _await_raw_ask_answer(
         self,

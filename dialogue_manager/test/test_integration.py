@@ -111,81 +111,58 @@ class MockSayNode(Node):
 
 
 class MockChatbotNode(Node):
-    """Mock chatbot that provides start_dialogue action and dialogue_interaction service."""
+    """Mock stateless chatbot: prepare_dialogue + dialogue_interaction services."""
 
     def __init__(
         self,
         response_text: str = 'Acknowledged.',
-        intents: Optional[List[Intent]] = None
+        intents: Optional[List[Intent]] = None,
     ):
         """Initialize the mock chatbot."""
         super().__init__('mock_chatbot')
         self._response_text = response_text
         self._intents = intents or []
-        self._received_inputs = []
-        self._active_dialogues = {}
+        self._received_histories: list = []
 
-        # Import here to avoid circular imports
-        from chatbot_msgs.action import Dialogue as DialogueAction
+        from chatbot_msgs.srv import PrepareDialogue
 
-        # Create action server for start_dialogue
-        self._dialogue_server = ActionServer(
-            self,
-            DialogueAction,
-            'chatbot/start_dialogue',
-            execute_callback=self._execute_dialogue,
-            goal_callback=self._goal_callback
+        self._prepare_service = self.create_service(
+            PrepareDialogue,
+            'chatbot/prepare_dialogue',
+            self._handle_prepare,
         )
-        self.get_logger().info('[MOCK CHATBOT] Created start_dialogue action server')
+        self.get_logger().info('[MOCK CHATBOT] Created prepare_dialogue service')
 
-        # Create service for dialogue_interaction
         self._interaction_service = self.create_service(
             DialogueInteraction,
             'chatbot/dialogue_interaction',
-            self._handle_interaction
+            self._handle_interaction,
         )
         self.get_logger().info('[MOCK CHATBOT] Created dialogue_interaction service')
 
-    def _goal_callback(self, goal_request):
-        """Accept all dialogue goals."""
-        return GoalResponse.ACCEPT
-
-    def _execute_dialogue(self, goal_handle):
-        """Execute dialogue - keep running until cancelled."""
-        from chatbot_msgs.action import Dialogue as DialogueAction
-
+    def _handle_prepare(self, request, response):
+        """No-op warm-up; just ack."""
         self.get_logger().info(
-            f'[MOCK CHATBOT] Started dialogue, role={goal_handle.request.role.name}'
+            f'[MOCK CHATBOT] prepare_dialogue role={request.role.name!r}'
         )
-
-        self._running = True  # Flag to control the loop
-
-        # Keep running until cancelled or shutdown
-        while goal_handle.is_active and not goal_handle.is_cancel_requested and self._running:
-            import time
-            time.sleep(0.1)
-
-        if goal_handle.is_cancel_requested:
-            goal_handle.canceled()
-            self.get_logger().info('[MOCK CHATBOT] Dialogue cancelled')
-            return DialogueAction.Result()
-
-        goal_handle.succeed()
-        return DialogueAction.Result()
+        return response
 
     def shutdown(self):
-        """Stop the chatbot node."""
-        self._running = False
+        """No long-running tasks to stop in the stateless mock."""
 
     def destroy(self) -> None:
-        """Clean up the action server before destroying the node."""
-        self._dialogue_server.destroy()
+        """Clean up the services before destroying the node."""
+        self.destroy_service(self._prepare_service)
+        self.destroy_service(self._interaction_service)
 
     def _handle_interaction(self, request, response):
-        """Handle dialogue interaction - return configured response."""
-        input_text = request.input
-        self._received_inputs.append(input_text)
-        self.get_logger().info(f'[MOCK CHATBOT] Received input: "{input_text}"')
+        """Handle dialogue interaction — return configured response."""
+        self._received_histories.append(list(request.history))
+        last_text = request.history[-1].text if request.history else ''
+        self.get_logger().info(
+            f'[MOCK CHATBOT] history_len={len(request.history)} '
+            f'last="{last_text}"'
+        )
 
         response.response = self._response_text
         response.intents = list(self._intents)
@@ -195,8 +172,8 @@ class MockChatbotNode(Node):
         return response
 
     def get_received_inputs(self) -> list:
-        """Return list of received inputs."""
-        return self._received_inputs
+        """Return list of last-utterance texts from each interaction."""
+        return [h[-1].text for h in self._received_histories if h]
 
     def set_response(self, text: str, intents: Optional[List[Intent]] = None):
         """Set the response text and intents."""

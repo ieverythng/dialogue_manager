@@ -25,6 +25,11 @@ from chatbot_msgs.msg import DialogueRole
 # Speaker ID used in `Utterance.speaker_id` to denote the robot itself.
 ROBOT_SPEAKER_ID = '__myself__'
 
+# Speaker ID used in `Utterance.speaker_id` for an in-history system /
+# world update — these are translated to chatbot_msgs/Utterance.SYSTEM
+# when shipped to the chatbot backend.
+SYSTEM_SPEAKER_ID = '__system__'
+
 # Speaker ID used to mark a pre-filled session summary (one entry carrying the
 # summary text of a prior dialogue). Excluded from `session_utterances`.
 SUMMARY_SPEAKER_ID = '__summary__'
@@ -123,7 +128,12 @@ class Dialogue:
     session_start_index: int = 0
     summary: str | None = None  # Cached LLM summary; None ⇒ not yet generated
     summary_generated_at: float | None = None
-    chatbot_goal_id: UUID | None = None  # The chatbot action goal UUID
+    # Role-driven terminal result, set by ChatbotClient when the chatbot
+    # signals dialogue_terminal=True on a DialogueInteraction response
+    # (e.g. __ask__ has extracted all required fields). The Skill servers
+    # poll this field together with the COMPLETED state to surface
+    # results to action callers.
+    results: str = ''
     goal_handle: object | None = None  # The skill action goal handle
     # Hook fired after any state-changing mutation on this dialogue
     # (add_utterance for now). Set by DialogueManager.add_dialogue so the

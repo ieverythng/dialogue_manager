@@ -12,34 +12,40 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Chatbot client for the Dialogue Manager."""
+"""
+Chatbot client for the Dialogue Manager.
 
-from collections.abc import Callable
+Speaks the stateless `chatbot_msgs` contract (v4): every chatbot turn
+is a single `DialogueInteraction` service call carrying the full
+dialogue history plus an optional prior-session summary. The chatbot
+backend retains no per-dialogue state between calls. An optional
+`PrepareDialogue` service is invoked fire-and-forget when a dialogue
+is created, giving backends a chance to warm up role-specific
+resources.
+"""
+
 from uuid import UUID
 
-from chatbot_msgs.action import Dialogue as DialogueAction
-from chatbot_msgs.msg import DialogueRole
-from chatbot_msgs.srv import DialogueInteraction
-from rclpy.action import ActionClient
+from chatbot_msgs.msg import Utterance
+from chatbot_msgs.srv import DialogueInteraction, PrepareDialogue
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from rclpy.publisher import Publisher
 from std_msgs.msg import Bool
 from unique_identifier_msgs.msg import UUID as UUIDMsg
 
+from .conversations_history import ConversationsHistoryStore
 from .dialogue import (
     Dialogue,
     DialogueManager,
     DialogueState,
     ROBOT_SPEAKER_ID,
+    SESSION_BREAK_SPEAKER_ID,
+    SUMMARY_SPEAKER_ID,
+    SYSTEM_SPEAKER_ID,
 )
 from .markup.executor import ExpressionExecutor
 from .say_client import SayClient
-
-
-# Per chatbot_msgs/srv/DialogueInteraction.srv
-SYSTEM_USER_ID = '__system__'
-ASSISTANT_USER_ID = '__assistant__'
 
 
 def uuid_to_msg(uuid: UUID) -> UUIDMsg:
@@ -47,12 +53,36 @@ def uuid_to_msg(uuid: UUID) -> UUIDMsg:
     return UUIDMsg(uuid=list(uuid.bytes))
 
 
+def _to_utterance_msg(speaker_id: str, text: str, timestamp: float) -> Utterance:
+    """Map a `dialogue_manager` Utterance into a `chatbot_msgs/Utterance`."""
+    if speaker_id == ROBOT_SPEAKER_ID:
+        speaker = Utterance.ASSISTANT
+    elif speaker_id == SYSTEM_SPEAKER_ID:
+        speaker = Utterance.SYSTEM
+    else:
+        speaker = speaker_id
+    return Utterance(speaker=speaker, text=text, timestamp=timestamp)
+
+
 class ChatbotClient:
     """
-    Handles chatbot interactions.
+    Handles chatbot interactions over the stateless v4 contract.
 
-    Manages dialogue sessions with the chatbot, sends user input,
-    processes responses, and publishes detected intents.
+    Per dialogue:
+      - `prepare(dialogue)` is fire-and-forget (called when the
+        dialogue is created); the chatbot may use it to warm up
+        role-specific resources but is not required to.
+      - `interact(dialogue)` is called once per user-driven turn (or
+        any time we want the chatbot to produce a turn). It snapshots
+        the dialogue's current session history, ships it as a single
+        `DialogueInteraction` request, and on response: records the
+        robot's utterance in the dialogue history, publishes any
+        detected intents, speaks the response, and propagates a
+        chatbot-signalled terminal flag back to the dialogue.
+
+    The client is otherwise stateless: no goal handles, no per-dialogue
+    bookkeeping. The chatbot backend is also stateless: there is no
+    "attach" / "detach" lifecycle to coordinate.
     """
 
     def __init__(
@@ -60,21 +90,23 @@ class ChatbotClient:
         node: Node,
         dialogue_manager: DialogueManager,
         say_client: SayClient,
+        conversations_store: ConversationsHistoryStore | None = None,
         expression_executor: ExpressionExecutor | None = None,
         intents_pub: Publisher | None = None,
         waiting_chatbot_pub: Publisher | None = None,
-        callback_group: ReentrantCallbackGroup | None = None
+        callback_group: ReentrantCallbackGroup | None = None,
     ):
         """Initialize the chatbot client."""
         self._node = node
         self._dialogue_manager = dialogue_manager
         self._say_client = say_client
+        self._conversations_store = conversations_store
         self._expression_executor = expression_executor
         self._intents_pub = intents_pub
         self._waiting_chatbot_pub = waiting_chatbot_pub
         self._callback_group = callback_group
 
-        self._dialogue_client: ActionClient | None = None
+        self._prepare_client = None
         self._interaction_client = None
         self._waiting_for_response = False
 
@@ -84,189 +116,185 @@ class ChatbotClient:
 
     @property
     def waiting_for_response(self) -> bool:
-        """Return True if waiting for a chatbot response."""
+        """Return True if a dialogue_interaction call is in flight."""
         return self._waiting_for_response
 
     def create_clients(self, chatbot_prefix: str) -> None:
-        """Create chatbot action and service clients."""
-        dialogue_action = f'{chatbot_prefix}/start_dialogue'
+        """Create the prepare_dialogue + dialogue_interaction service clients."""
+        prepare_srv = f'{chatbot_prefix}/prepare_dialogue'
         interaction_srv = f'{chatbot_prefix}/dialogue_interaction'
 
-        self._dialogue_client = ActionClient(
-            self._node,
-            DialogueAction,
-            dialogue_action,
-            callback_group=self._callback_group
+        self._prepare_client = self._node.create_client(
+            PrepareDialogue, prepare_srv, callback_group=self._callback_group,
         )
-        self._node.get_logger().info(f'[CHATBOT] Created action client: {dialogue_action}')
+        self._node.get_logger().info(
+            f'[CHATBOT] Created service client: {prepare_srv}'
+        )
 
         self._interaction_client = self._node.create_client(
             DialogueInteraction,
             interaction_srv,
-            callback_group=self._callback_group
+            callback_group=self._callback_group,
         )
-        self._node.get_logger().info(f'[CHATBOT] Created service client: {interaction_srv}')
+        self._node.get_logger().info(
+            f'[CHATBOT] Created service client: {interaction_srv}'
+        )
 
     def destroy(self) -> None:
-        """Destroy chatbot clients."""
-        if self._dialogue_client:
-            self._dialogue_client.destroy()
-            self._dialogue_client = None
+        """Destroy the chatbot service clients."""
+        if self._prepare_client:
+            self._node.destroy_client(self._prepare_client)
+            self._prepare_client = None
         if self._interaction_client:
             self._node.destroy_client(self._interaction_client)
             self._interaction_client = None
 
     def is_available(self, timeout_sec: float = 1.0) -> bool:
-        """Check if chatbot is available."""
-        if not self._dialogue_client:
+        """Check if the chatbot backend is reachable."""
+        if not self._interaction_client:
             return False
-        return self._dialogue_client.wait_for_server(timeout_sec=timeout_sec)
+        return self._interaction_client.wait_for_service(timeout_sec=timeout_sec)
 
-    def attach_to_dialogue(
-        self,
-        dialogue: Dialogue,
-        role: DialogueRole,
-        on_accepted: Callable[[Dialogue], None] | None = None,
-        on_rejected: Callable[[Dialogue], None] | None = None,
-    ) -> bool:
+    # ------------------------------------------------------------------
+    # PrepareDialogue (optional warm-up).
+    # ------------------------------------------------------------------
+
+    def prepare(self, dialogue: Dialogue) -> bool:
         """
-        Asynchronously start a chatbot dialogue and attach it to `dialogue`.
+        Fire-and-forget warm-up for `dialogue`.
 
-        Sends a start_dialogue goal to the chatbot in the background; on
-        acceptance, sets `dialogue.chatbot_goal_id` so subsequent
-        SpeechHandler input is forwarded to the chatbot. Returns True if
-        the goal was dispatched (server reachable), False otherwise.
-
-        `on_accepted` / `on_rejected` are invoked from the goal-response
-        thread after `chatbot_goal_id` is set (or proven unobtainable),
-        letting callers flush any speech that arrived during the attach.
+        Calls the backend's optional `prepare_dialogue` service so it
+        can initialise role-specific resources before the first turn.
+        We do not wait for the response — backends that have nothing
+        to warm up may treat the service as a no-op, and a backend
+        outage here must not prevent us from later attempting an
+        interaction (the interaction itself is the load-bearing call).
         """
-        if not self._dialogue_client or not self._dialogue_client.wait_for_server(
-            timeout_sec=1.0
-        ):
-            self._node.get_logger().warn(
-                '[CHATBOT] attach_to_dialogue: server not available'
+        if not self._prepare_client:
+            return False
+        # service_is_ready avoids a blocking wait in case the backend
+        # isn't yet up; an unavailable prepare is non-fatal.
+        if not self._prepare_client.service_is_ready():
+            self._node.get_logger().debug(
+                f'[CHATBOT] prepare_dialogue not ready for dialogue '
+                f'{dialogue.dialogue_id}; skipping warm-up'
             )
             return False
-        goal = DialogueAction.Goal()
-        goal.role = role
-        future = self._dialogue_client.send_goal_async(goal)
-        future.add_done_callback(
-            lambda f, d=dialogue: self._on_attached_goal_response(
-                f, d, on_accepted, on_rejected
-            )
-        )
+
+        request = PrepareDialogue.Request()
+        request.dialogue_id = uuid_to_msg(dialogue.dialogue_id)
+        request.role = dialogue.role
         self._node.get_logger().info(
-            f'[CHATBOT] Attaching chatbot dialogue to {dialogue.dialogue_id} '
-            f'(role="{role.name}", interlocutor={dialogue.interlocutor.key})'
+            f'[CHATBOT] prepare_dialogue: id={dialogue.dialogue_id} '
+            f'role={dialogue.role.name!r}'
         )
+        self._prepare_client.call_async(request)
         return True
 
-    def _on_attached_goal_response(
-        self,
-        future,
-        dialogue: Dialogue,
-        on_accepted: Callable[[Dialogue], None] | None,
-        on_rejected: Callable[[Dialogue], None] | None,
-    ) -> None:
-        """Handle the chatbot goal acceptance for an attached dialogue."""
-        goal_handle = future.result()
-        if not goal_handle or not goal_handle.accepted:
-            self._node.get_logger().error(
-                f'[CHATBOT] !!! Chatbot REJECTED dialogue '
-                f'{dialogue.dialogue_id}; THIS SHOULD NOT HAPPEN. '
-                'Running passive.'
-            )
-            if on_rejected:
-                on_rejected(dialogue)
-            return
-        chatbot_goal_id = UUID(bytes=bytes(goal_handle.goal_id.uuid))
-        dialogue.chatbot_goal_id = chatbot_goal_id
-        self._dialogue_manager.notify_change(dialogue.dialogue_id)
-        self._node.get_logger().info(
-            f'[CHATBOT] Attached chatbot_goal_id={chatbot_goal_id} to '
-            f'dialogue {dialogue.dialogue_id}'
-        )
-        if on_accepted:
-            on_accepted(dialogue)
+    # ------------------------------------------------------------------
+    # DialogueInteraction (main turn driver).
+    # ------------------------------------------------------------------
 
-    def send_input(
-        self,
-        dialogue_id: UUID,
-        user_id: str,
-        text: str,
-        response_callback: Callable | None = None
-    ) -> bool:
-        """Send user input to chatbot."""
+    def interact(self, dialogue: Dialogue) -> bool:
+        """
+        Request a chatbot turn for `dialogue` based on its current history.
+
+        Snapshots `dialogue.session_utterances` into a
+        `chatbot_msgs/Utterance[]`, builds the prior-session summary
+        (from the conversations store, when configured), packs it into
+        a `DialogueInteraction` request, and calls the service async.
+        The response is handled on the executor thread: see
+        `_on_response` for the post-call pipeline (record robot speech,
+        publish intents, speak, propagate terminal flag).
+
+        Callers are expected to have already appended the triggering
+        turn (e.g. a user utterance, or a `__system__` directive) to
+        `dialogue.history` before invoking this method; the chatbot
+        must see what it's being asked to react to.
+        """
         if not self._interaction_client:
-            self._node.get_logger().warn('[CHATBOT] No interaction client available')
-            return False
-
-        dialogue = self._dialogue_manager.get_dialogue(dialogue_id)
-        if not dialogue:
-            self._node.get_logger().warn(f'[CHATBOT] Dialogue {dialogue_id} not found')
-            return False
-
-        if not dialogue.chatbot_goal_id:
             self._node.get_logger().warn(
-                f'[CHATBOT] Dialogue {dialogue_id} has no chatbot goal ID'
+                '[CHATBOT] No interaction client available'
             )
             return False
 
-        self._node.get_logger().info(
-            f'[CHATBOT REQUEST] chatbot_goal_id={dialogue.chatbot_goal_id}, '
-            f'user_id="{user_id}", text="{text}"'
-        )
+        if not dialogue.session_utterances:
+            self._node.get_logger().warn(
+                f'[CHATBOT] interact() called with empty session history '
+                f'for dialogue {dialogue.dialogue_id}; skipping'
+            )
+            return False
 
-        # NOTE: user-attributable utterances are recorded by the SpeechHandler
-        # before send_input is called, so the dialogue history stays coherent
-        # in chatbot-less mode too. Do not re-record here.
+        history = []
+        for utt in dialogue.session_utterances:
+            # The pre-fill sentinels (SUMMARY / SESSION_BREAK) live
+            # before `session_start_index`, so they should never appear
+            # here — guard anyway in case the index gets out of sync.
+            if utt.speaker_id in (SUMMARY_SPEAKER_ID, SESSION_BREAK_SPEAKER_ID):
+                continue
+            history.append(_to_utterance_msg(
+                utt.speaker_id, utt.text, utt.timestamp,
+            ))
 
-        # Set waiting state
+        summary = ''
+        if (self._conversations_store is not None
+                and dialogue.interlocutor.is_bound):
+            summary = self._conversations_store.build_context(
+                dialogue.interlocutor,
+                now=self._now(),
+            )
+
+        request = DialogueInteraction.Request()
+        request.dialogue_id = uuid_to_msg(dialogue.dialogue_id)
+        request.role = dialogue.role
+        request.summary = summary
+        request.history = history
+
+        # Mark waiting state for diagnostics + the speech handler's
+        # "drop while busy" guard.
         self._waiting_for_response = True
-        self._waiting_chatbot_pub.publish(Bool(data=True))
+        if self._waiting_chatbot_pub:
+            self._waiting_chatbot_pub.publish(Bool(data=True))
         dialogue.state = DialogueState.WAITING_RESPONSE
         self._dialogue_manager.notify_change(dialogue.dialogue_id)
-        self._node.get_logger().debug('[CHATBOT] State set to WAITING_RESPONSE')
 
-        # Build and send request - use chatbot_goal_id, not internal dialogue_id
-        request = DialogueInteraction.Request()
-        request.dialogue_id = uuid_to_msg(dialogue.chatbot_goal_id)
-        request.user_id = user_id
-        request.input = text
-        request.response_expected = True
+        if len(history) > 0:
+            last = history[-1]
+            self._node.get_logger().info(
+                f'[CHATBOT REQUEST] dialogue_id={dialogue.dialogue_id} '
+                f'role={dialogue.role.name!r} history_len={len(history)} '
+                f'last={last.speaker!r}:"{last.text[:80]}"'
+            )
 
-        self._node.get_logger().debug('[CHATBOT] Calling dialogue_interaction async')
         future = self._interaction_client.call_async(request)
         future.add_done_callback(
-            lambda f: self._on_response(f, dialogue_id, response_callback)
+            lambda f, did=dialogue.dialogue_id: self._on_response(f, did)
         )
         return True
 
-    def _on_response(
-        self,
-        future,
-        dialogue_id: UUID,
-        callback: Callable | None = None
-    ) -> None:
-        """Handle chatbot response."""
+    def _on_response(self, future, dialogue_id: UUID) -> None:
+        """Handle the `DialogueInteraction` service response."""
         self._waiting_for_response = False
-        self._waiting_chatbot_pub.publish(Bool(data=False))
+        if self._waiting_chatbot_pub:
+            self._waiting_chatbot_pub.publish(Bool(data=False))
 
         dialogue = self._dialogue_manager.get_dialogue(dialogue_id)
-        if dialogue:
+        if dialogue and dialogue.state == DialogueState.WAITING_RESPONSE:
             dialogue.state = DialogueState.ACTIVE
             self._dialogue_manager.notify_change(dialogue.dialogue_id)
 
         try:
             response = future.result()
-        except Exception as e:
-            self._node.get_logger().error(f'[CHATBOT RESPONSE] Failed: {e}')
+        except Exception as exc:
+            self._node.get_logger().error(
+                f'[CHATBOT RESPONSE] failed for {dialogue_id}: {exc}'
+            )
             return
 
         if response.error_msg:
             self._node.get_logger().warn(
-                f'[CHATBOT RESPONSE] Error: {response.error_msg}'
+                f'[CHATBOT RESPONSE] error for {dialogue_id}: '
+                f'{response.error_msg}'
             )
             return
 
@@ -275,17 +303,20 @@ class ChatbotClient:
         else:
             log_text = f'"{response.response}"'
         self._node.get_logger().info(
-            f'[CHATBOT RESPONSE] dialogue_id={dialogue_id}: {log_text}'
+            f'[CHATBOT RESPONSE] dialogue_id={dialogue_id}: {log_text} '
+            f'terminal={response.dialogue_terminal}'
         )
 
-        # Record the robot's utterance in the dialogue history.
+        # Record the robot's utterance in the dialogue history. The
+        # backend is stateless wrt. history; the next turn will carry
+        # this back to it via `interact()`.
         if dialogue and response.response:
             dialogue.add_utterance(
-                ROBOT_SPEAKER_ID, response.response, self._now()
+                ROBOT_SPEAKER_ID, response.response, self._now(),
             )
 
-        # Publish intents
-        if response.intents:
+        # Publish intents.
+        if response.intents and self._intents_pub:
             self._node.get_logger().info(
                 f'[CHATBOT RESPONSE] {len(response.intents)} intent(s) detected'
             )
@@ -299,20 +330,17 @@ class ChatbotClient:
                 )
                 self._intents_pub.publish(intent)
 
-        # Speak response (with markup processing if executor available)
-        if response.response:
-            self._node.get_logger().info(
-                '[CHATBOT RESPONSE] Speaking via Say sub-skill'
-            )
+        # Speak the response (with markup processing if available).
+        if response.response and dialogue:
             person_id = (
                 dialogue.interlocutor.person_id
-                if dialogue and dialogue.interlocutor else ''
+                if dialogue.interlocutor else ''
             )
             group_id = (
                 dialogue.interlocutor.group_id
-                if dialogue and dialogue.interlocutor else ''
+                if dialogue.interlocutor else ''
             )
-            priority = dialogue.priority if dialogue else 128
+            priority = dialogue.priority
             if self._expression_executor:
                 self._expression_executor.execute_text(
                     response.response,
@@ -327,72 +355,15 @@ class ChatbotClient:
                     person_id=person_id,
                     group_id=group_id,
                 )
-        else:
-            self._node.get_logger().debug('[CHATBOT RESPONSE] No text to speak')
 
-        # Invoke callback
-        if callback:
-            try:
-                callback(response)
-            except Exception as e:
-                self._node.get_logger().error(f'[CHATBOT] Response callback failed: {e}')
-
-    def inject_context(self, dialogue_id: UUID, context: str) -> bool:
-        """
-        Push a `__system__` priming message into the chatbot for this dialogue.
-
-        Used at dialogue start to deliver the per-interlocutor conversation
-        context. No response is expected and no history is recorded (system
-        messages are not utterances per DIALOGUE_FLOW.md).
-
-        See TODO.md — context delivery for the longer-term redesign.
-        """
-        if not context:
-            return False
-        if not self._interaction_client:
-            return False
-
-        dialogue = self._dialogue_manager.get_dialogue(dialogue_id)
-        if not dialogue or not dialogue.chatbot_goal_id:
-            return False
-
-        request = DialogueInteraction.Request()
-        request.dialogue_id = uuid_to_msg(dialogue.chatbot_goal_id)
-        request.user_id = SYSTEM_USER_ID
-        request.input = context
-        request.response_expected = False
-
-        self._node.get_logger().info(
-            f'[CHATBOT] Injecting context for dialogue {dialogue_id} '
-            f'({len(context)} chars)'
-        )
-        self._interaction_client.call_async(request)
-        return True
-
-    async def start_dialogue(
-        self,
-        role: DialogueRole,
-        timeout_sec: float = 5.0
-    ) -> object | None:
-        """Start a new dialogue session."""
-        if not self._dialogue_client:
-            self._node.get_logger().warn('[CHATBOT] No dialogue client available')
-            return None
-
-        if not self._dialogue_client.wait_for_server(timeout_sec=timeout_sec):
-            self._node.get_logger().warn('[CHATBOT] Server not available')
-            return None
-
-        goal = DialogueAction.Goal()
-        goal.role = role
-
-        self._node.get_logger().info(f'[CHATBOT] Starting dialogue with role="{role.name}"')
-        send_future = self._dialogue_client.send_goal_async(goal)
-        goal_handle = await send_future
-
-        if not goal_handle or not goal_handle.accepted:
-            self._node.get_logger().warn('[CHATBOT] Dialogue goal rejected')
-            return None
-
-        self._node.get_logger().info('[CHATBOT] Dialogue started successfully')
-        return goal_handle
+        # Role-driven termination signal: stash the structured results
+        # and flip the dialogue to COMPLETED so the skill server's
+        # execute coroutine can pick them up.
+        if response.dialogue_terminal and dialogue:
+            self._node.get_logger().info(
+                f'[CHATBOT RESPONSE] dialogue_terminal=True for {dialogue_id}; '
+                f'results="{response.results[:120]}"'
+            )
+            dialogue.results = response.results
+            dialogue.state = DialogueState.COMPLETED
+            self._dialogue_manager.notify_change(dialogue.dialogue_id)

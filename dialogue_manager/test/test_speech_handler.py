@@ -15,7 +15,6 @@
 """Unit tests for speech_handler.py with mocked ROS2 dependencies."""
 
 from unittest.mock import MagicMock
-from uuid import uuid4
 
 from chatbot_msgs.msg import DialogueRole
 from dialogue_manager.conversations_history import ConversationsHistoryStore
@@ -252,26 +251,22 @@ class TestSpeechHandlerOnSpeech:
         self.mock_intents_pub.publish.assert_called_once()
 
     def test_on_speech_uses_person_dialogue(self):
-        """Speech routes to person's active dialogue."""
-        # Create active dialogue for this person
+        """Speech routes to person's active dialogue via interact()."""
         role = DialogueRole(name='test')
-        chatbot_goal_id = uuid4()
         dialogue = Dialogue(
             role=role,
             interlocutor=Interlocutor(person_id='voice1'),
             state=DialogueState.ACTIVE,
-            chatbot_goal_id=chatbot_goal_id
         )
         self.mock_dialogue_manager.add_dialogue(dialogue)
+        self.mock_chatbot_client.is_available.return_value = True
 
         msg = LiveSpeech()
         msg.final = 'Hello'
 
         self.handler._on_speech('voice1', msg)
 
-        self.mock_chatbot_client.send_input.assert_called_once_with(
-            dialogue.dialogue_id, 'voice1', 'Hello'
-        )
+        self.mock_chatbot_client.interact.assert_called_once_with(dialogue)
 
     def test_on_speech_spawns_per_person_default_dialogue(self):
         """First speech from a new speaker auto-spawns a per-person Dialogue."""
@@ -292,8 +287,8 @@ class TestSpeechHandlerOnSpeech:
         # The utterance lives in that dialogue's history.
         assert len(spawned.history) == 1
         assert spawned.history[0].text == 'hiya'
-        # And the chatbot was asked to attach (mock records the call).
-        self.mock_chatbot_client.attach_to_dialogue.assert_called_once()
+        # And the chatbot was warmed up (fire-and-forget).
+        self.mock_chatbot_client.prepare.assert_called_once_with(spawned)
 
     def test_on_speech_spawns_one_dialogue_per_person(self):
         """Different speakers each get their own __default__ dialogue."""
@@ -335,11 +330,11 @@ class TestSpeechHandlerOnSpeech:
         )
         assert d is not None
         assert [u.text for u in d.history] == ['hi', 'how are you']
-        # Only one chatbot attach call (for the spawn).
-        assert self.mock_chatbot_client.attach_to_dialogue.call_count == 1
+        # Only one chatbot warm-up call (for the spawn).
+        assert self.mock_chatbot_client.prepare.call_count == 1
 
     def test_on_speech_chatbot_less_does_not_attach(self):
-        """No chatbot present → spawn dialogue but never call attach_to_dialogue."""
+        """No chatbot present → spawn dialogue but no prepare/interact calls."""
         self.handler._chatbot_client = None
         self.handler.set_default_chat('__default__')
 
@@ -352,7 +347,7 @@ class TestSpeechHandlerOnSpeech:
             Interlocutor(person_id='alice')
         )
         assert d is not None
-        assert d.chatbot_goal_id is None
+        assert d.results == ''
         assert len(d.history) == 1
         # RAW_USER_INPUT still published.
         self.mock_intents_pub.publish.assert_called_once()

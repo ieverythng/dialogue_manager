@@ -51,7 +51,7 @@ JSON schema (see also `doc/DEBUG_STATE.md`):
       "started_at": <float|null>,
       "ended_at": <float|null>,
       "last_updated_at": <float|null>,
-      "chatbot_goal_id": "<uuid>|null",
+      "results": "<json-encoded string or empty>",
       "session_start_index": <int>,
       "summary": "<text>|null",
       "summary_generated_at": <float|null>,
@@ -198,8 +198,7 @@ class DebugStatePublisher:
             'started_at': d.started_at,
             'ended_at': d.ended_at,
             'last_updated_at': self._last_updated_at.get(str(d.dialogue_id)),
-            'chatbot_goal_id':
-                str(d.chatbot_goal_id) if d.chatbot_goal_id else None,
+            'results': d.results,
             'session_start_index': d.session_start_index,
             'summary': d.summary,
             'summary_generated_at': d.summary_generated_at,
