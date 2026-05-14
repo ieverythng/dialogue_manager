@@ -2,8 +2,8 @@
 Changelog for package dialogue_manager
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
+2.2.0 (2026-05-14)
+------------------
 * Inject __system_\_ membership note into group dialogues at spawn
   When a group dialogue is spawned (auto-spawn in speech_handler or
   explicit Chat goal with group_id in skill_servers), prepend a
