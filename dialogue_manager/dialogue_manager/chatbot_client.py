@@ -29,6 +29,7 @@ from uuid import UUID
 from chatbot_msgs.msg import Utterance
 from chatbot_msgs.srv import DialogueInteraction, PrepareDialogue
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.logging import LoggingSeverity
 from rclpy.node import Node
 from rclpy.publisher import Publisher
 from std_msgs.msg import Bool
@@ -51,6 +52,20 @@ from .say_client import SayClient
 def uuid_to_msg(uuid: UUID) -> UUIDMsg:
     """Convert a Python UUID to a ROS UUID message."""
     return UUIDMsg(uuid=list(uuid.bytes))
+
+
+def _debug_enabled(logger) -> bool:
+    """
+    Return True iff `logger`'s effective level is DEBUG or lower.
+
+    Wraps the comparison so unit tests using a MagicMock logger
+    don't trip a TypeError when MagicMock vs. LoggingSeverity is
+    compared.
+    """
+    try:
+        return logger.get_effective_level() <= LoggingSeverity.DEBUG
+    except TypeError:
+        return False
 
 
 def _to_utterance_msg(speaker_id: str, text: str, timestamp: float) -> Utterance:
@@ -265,6 +280,25 @@ class ChatbotClient:
                 f'role={dialogue.role.name!r} history_len={len(history)} '
                 f'last={last.speaker!r}:"{last.text[:80]}"'
             )
+
+        # Verbose dump of the exact history about to ship, gated at DEBUG
+        # so it doesn't bloat normal runs. The `if` short-circuits the
+        # f-string formatting when DEBUG is off. Enable with e.g.
+        # `--ros-args --log-level dialogue_manager:=debug`.
+        logger = self._node.get_logger()
+        if _debug_enabled(logger):
+            history_dump = '\n'.join(
+                f'  [{u.speaker}] {u.text!r}' for u in history
+            )
+            logger.debug(
+                f'[CHATBOT REQUEST] outbound history '
+                f'({len(history)} entries):\n{history_dump}'
+            )
+            if summary:
+                logger.debug(
+                    f'[CHATBOT REQUEST] outbound summary '
+                    f'({len(summary)} chars):\n{summary}'
+                )
 
         future = self._interaction_client.call_async(request)
         future.add_done_callback(
