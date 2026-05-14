@@ -2,6 +2,96 @@
 Changelog for package dialogue_manager
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Forthcoming
+-----------
+* Inject __system_\_ membership note into group dialogues at spawn
+  When a group dialogue is spawned (auto-spawn in speech_handler or
+  explicit Chat goal with group_id in skill_servers), prepend a
+  __system_\_ utterance listing the other participants — e.g.
+  "You are now in a group conversation with: alice, bob, carol." —
+  so the LLM has explicit context for multi-party turns instead of
+  having to infer membership from interleaved user_ids.
+  Single snapshot at spawn time; mid-session membership churn does
+  not currently re-emit. That would belong to the active-dialogue
+  tracker work that's still outstanding.
+  Skipped for groups of <=1 (degenerate; not a real group).
+  DSL test helpers (_count_history, _history_text) now skip
+  SYSTEM_SPEAKER_ID utterances when counting "spoken" content —
+  the DSL is asserting fan-out of user/robot speech, not internal
+  metadata events.
+  Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+* manager_node: expose ~/{get,set}_logger_levels services
+  Pass enable_logger_service=True to the LifecycleNode constructor so
+  log levels can be flipped at runtime via the standard rclpy logger
+  services. Lets callers turn the DEBUG dump in chatbot_client.interact
+  on/off without restarting the node.
+  Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+* chatbot_client: DEBUG-level dump of outbound history + summary
+  Adds a verbose dump of the exact Utterance[] history and prior-session
+  summary about to ship in a dialogue_interaction call. Gated at DEBUG
+  so a long conversation doesn't bloat normal runs; enable with
+  `--ros-args --log-level dialogue_manager:=debug`.
+  Useful for diagnosing "the LLM didn't see my Say utterance" type
+  failures: pair this with the matching dump on the chatbot_llm side
+  to see (a) what dialogue_manager shipped and (b) what chatbot_llm
+  forwarded to the LLM after its system-prompt rendering.
+  _debug_enabled() wraps the LoggingSeverity comparison so the
+  MagicMock-based unit tests don't trip on the type check.
+  Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+* Port to stateless chatbot_msgs v4 contract
+  The chatbot backend is no longer a long-lived action goal; it is a
+  stateless service that receives the full dialogue history on every
+  turn. This commit ports the dialogue_manager side to the new
+  contract.
+  - chatbot_client: complete rewrite.
+  * Replace the start_dialogue action handle with a fire-and-forget
+  `prepare(dialogue)` call against the optional PrepareDialogue
+  service.
+  * Replace per-event send_input / inject_context / echo plumbing
+  with a single `interact(dialogue)` method that snapshots
+  `dialogue.session_utterances` into a chatbot_msgs/Utterance[]
+  and ships it (alongside the role and the prior-session summary
+  pulled from the conversations store) as one DialogueInteraction
+  call. Speaker mapping: ROBOT_SPEAKER_ID -> Utterance.ASSISTANT,
+  SYSTEM_SPEAKER_ID -> Utterance.SYSTEM, anything else verbatim.
+  * On response, record the robot's utterance into dialogue.history
+  (so the next turn carries it), publish intents, speak, and
+  propagate the new `dialogue_terminal` flag (with `results`) by
+  transitioning the dialogue to COMPLETED.
+  - dialogue: drop `chatbot_goal_id` (no separate handle anymore). Add
+  SYSTEM_SPEAKER_ID and a `results: str` field used by ChatbotClient
+  to surface role-driven terminal results back to skill execution
+  coroutines.
+  - speech_handler: drop the pending-attach queue and the
+  attach_to_dialogue handshake — the chatbot has no per-dialogue
+  state to attach to. Forwarding becomes one line:
+  `chatbot_client.interact(speaker_dialogue)`. Spawn paths call
+  `prepare()` instead.
+  - skill_servers: Chat / Ask no longer await an action goal handle.
+  Ask waits on `dialogue.state == COMPLETED` + `dialogue.results`
+  (set by the chatbot's dialogue_terminal response). Chat with
+  `initiate=true` and no `initial_input` appends a __system\_\_
+  directive ("greet user X") to the history and calls interact() —
+  the chatbot sees the directive in the stream and produces the
+  opener. Drop _inject_initial_context (now folded into
+  DialogueInteraction.summary).
+  - debug_publisher: replace `chatbot_goal_id` field with `results`
+  in the JSON snapshot.
+  - tests: rewrite test_chatbot_client around prepare / interact /
+  _on_response. Update test_dialogue and test_speech_handler for
+  the new chatbot_goal_id-less Dialogue. Rework MockChatbotNode in
+  test_integration to expose the stateless services.
+  Pairs with the chatbot_msgs 4.0.0 contract change and the chatbot_llm
+  stateless port.
+  NOTE: the active-dialogue tracker + group-aware fan-out simplification
+  discussed in the design conversation are NOT in this commit. The
+  existing speech_handler fan-out (one utterance into multiple per-person
+  + per-group dialogues) is preserved here, just adapted to call
+  interact() instead of send_input(). The single-active-dialogue
+  invariant is a follow-up.
+  Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+* Contributors: Séverin Lemaignan
+
 2.1.0 (2026-05-13)
 ------------------
 * chatbot: queue first-utterance speech across async attach
