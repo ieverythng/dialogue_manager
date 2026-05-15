@@ -20,9 +20,9 @@
     chatbot_response_timeout: 5.0
 
     # Planner completion wording mode:
-    # - direct: speak planner factual text directly (default)
-    # - chatbot: ask chatbot_llm to paraphrase completion wording
-    planner_completion_wording_mode: "direct"
+    # - direct: speak planner factual text directly
+    # - chatbot: chatbot_llm owns user-facing completion utterance (default)
+    planner_completion_wording_mode: "chatbot"
 
     # Legacy override for completion wording through chatbot_llm.
     # Prefer planner_completion_wording_mode above.

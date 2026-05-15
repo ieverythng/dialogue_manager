@@ -14,6 +14,7 @@
 
 """Chatbot client for the Dialogue Manager."""
 
+import json
 from typing import Callable, Optional
 from uuid import UUID
 
@@ -297,6 +298,20 @@ class ChatbotClient:
             self._default_dialogue_id,
             '__system__',
             text,
+            response_callback=response_callback,
+        )
+
+    def send_planner_completion_context(
+        self,
+        completion_context: dict,
+        response_callback: Optional[Callable] = None,
+    ) -> bool:
+        """Request chatbot-owned completion wording from structured execution facts."""
+        payload = {
+            'planner_completion': dict(completion_context or {}),
+        }
+        return self.send_default_system_input(
+            json.dumps(payload, sort_keys=True, separators=(',', ':')),
             response_callback=response_callback,
         )
 

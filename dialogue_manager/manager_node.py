@@ -387,10 +387,10 @@ class DialogueManagerNode(LifecycleNode):
         """Route completed planner tasks back through chatbot_llm for wording."""
         if self._chatbot_client is None:
             return False
-        prompt = _planner_completion_prompt(dialogue_act)
-        if not prompt:
+        completion_context = _planner_completion_context(dialogue_act)
+        if not completion_context:
             return False
-        sent = self._chatbot_client.send_default_system_input(prompt)
+        sent = self._chatbot_client.send_planner_completion_context(completion_context)
         if sent:
             self.get_logger().info(
                 '[PLANNER ACT] Requested chatbot wording for goal_id=%s'
@@ -431,8 +431,8 @@ def _planner_dialogue_text(dialogue_act: PlannerDialogueAct) -> str:
     return fallback_by_act.get(act, '').strip()
 
 
-def _planner_completion_prompt(dialogue_act: PlannerDialogueAct) -> str:
-    """Build a system prompt asking chatbot_llm to phrase completion naturally."""
+def _planner_completion_context(dialogue_act: PlannerDialogueAct) -> dict:
+    """Extract structured completion context to be rendered by chatbot_llm."""
     context = dict(dialogue_act.context or {})
     goal_text = str(context.get('goal_text', '')).strip()
     result_summary = str(context.get('result_summary', '')).strip()
@@ -443,31 +443,23 @@ def _planner_completion_prompt(dialogue_act: PlannerDialogueAct) -> str:
     requested_intents = context.get('requested_intents', [])
     if not isinstance(requested_intents, list):
         requested_intents = []
-
-    parts = [
-        'The robot has finished executing a user-requested task.',
-        'Reply to the human with one short, natural sentence about the completed task.',
-        'Do not propose new actions, mention planner internals, or repeat the initial acknowledgement.',
-        (
-            'Use only the execution result and suggested factual content as facts; if they do not '
-            'answer whether a requested person, object, or target was found, say that no confirmed '
-            'result was available instead of guessing.'
-        ),
-    ]
-    if goal_text:
-        parts.append('Original user request: %s' % goal_text)
-    if result_summary:
-        parts.append('Execution result: %s' % result_summary)
-    if text_hint:
-        parts.append('Suggested factual content: %s' % text_hint)
     clean_intents = [
         str(item).strip()
         for item in requested_intents
         if str(item).strip()
     ]
-    if clean_intents:
-        parts.append('Normalized intents: %s' % ', '.join(clean_intents))
-    return '\n'.join(parts)
+    normalized_payload = result_payload if isinstance(result_payload, dict) else {}
+    if not (goal_text or result_summary or text_hint or clean_intents or normalized_payload):
+        return {}
+    return {
+        'goal_id': str(dialogue_act.goal_id or '').strip(),
+        'goal_token': str(getattr(dialogue_act, 'goal_token', '') or dialogue_act.goal_id or '').strip(),
+        'goal_text': goal_text,
+        'result_summary': result_summary,
+        'result_payload': normalized_payload,
+        'text_hint': text_hint,
+        'requested_intents': clean_intents,
+    }
 
 
 def _planner_tts_priority(priority_name: str) -> int:

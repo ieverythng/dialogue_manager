@@ -15,7 +15,7 @@
 """Integration tests for manager_node.py lifecycle node."""
 
 from dialogue_manager.manager_node import DialogueManagerNode
-from dialogue_manager.manager_node import _planner_completion_prompt
+from dialogue_manager.manager_node import _planner_completion_context
 from dialogue_manager.manager_node import _planner_dialogue_text
 from planner_common import PlannerDialogueAct
 import pytest
@@ -43,8 +43,8 @@ class TestDialogueManagerNodeInit:
         node.destroy_node()
 
 
-def test_planner_completion_prompt_keeps_chatbot_as_wording_owner():
-    """Completion prompt carries facts without exposing planner internals."""
+def test_planner_completion_context_exports_structured_facts():
+    """Completion context carries structured facts for chatbot_llm wording."""
     act = PlannerDialogueAct.from_payload(
         {
             'act': 'notify_completion',
@@ -58,13 +58,13 @@ def test_planner_completion_prompt_keeps_chatbot_as_wording_owner():
         }
     )
 
-    prompt = _planner_completion_prompt(act)
+    payload = _planner_completion_context(act)
 
-    assert 'one short, natural sentence' in prompt
-    assert 'move your head up and down' in prompt
-    assert 'head motion completed' in prompt
-    assert 'planner internals' in prompt
-    assert 'no confirmed result was available' in prompt
+    assert payload['goal_id'] == 'goal_1'
+    assert payload['goal_text'] == 'move your head up and down'
+    assert payload['result_summary'] == 'head motion completed'
+    assert payload['text_hint'] == 'I am looking down now.'
+    assert payload['requested_intents'] == ['head_nod']
 
 
 def test_planner_dialogue_text_prefers_structured_scan_summary_text() -> None:

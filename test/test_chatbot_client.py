@@ -14,6 +14,7 @@
 
 """Unit tests for chatbot_client.py with mocked ROS2 dependencies."""
 
+import json
 from unittest.mock import MagicMock, patch
 from uuid import UUID, uuid4
 
@@ -232,6 +233,32 @@ class TestChatbotClientSendInput:
         request = mock_interaction_client.call_async.call_args.args[0]
         assert request.user_id == '__system__'
         assert request.response_expected is True
+
+    def test_send_planner_completion_context_wraps_structured_payload(self):
+        """Completion context is wrapped in planner_completion envelope."""
+        mock_interaction_client = MagicMock()
+        mock_interaction_client.call_async.return_value = MagicMock()
+        self.client._interaction_client = mock_interaction_client
+
+        role = DialogueRole(name='__default__')
+        chatbot_goal_id = uuid4()
+        dialogue = Dialogue(role=role, chatbot_goal_id=chatbot_goal_id)
+        self.mock_dialogue_manager.add_dialogue(dialogue)
+        self.client._default_dialogue_id = dialogue.dialogue_id
+
+        result = self.client.send_planner_completion_context(
+            {'goal_text': 'scan the room', 'result_summary': 'I found one person.'}
+        )
+
+        assert result is True
+        request = mock_interaction_client.call_async.call_args.args[0]
+        payload = json.loads(request.input)
+        assert payload == {
+            'planner_completion': {
+                'goal_text': 'scan the room',
+                'result_summary': 'I found one person.',
+            }
+        }
 
 
 class TestChatbotClientDestroy:
