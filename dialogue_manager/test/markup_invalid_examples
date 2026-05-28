@@ -1,0 +1,25 @@
+Look <do do>
+<wait start>
+<set stop>
+<do pause>
+<start set>
+<do 123>
+<start "notAnId">
+<set expr(=5)>
+<set expr(,a)>
+<pause>
+<pause()>
+<pause(abc)>
+<set>
+<start>
+<wait>
+<>
+< >
+<set expr(a b)>
+<set expr(a=)>
+<set expr(a==1)>
+<wait motion timeout>
+<wait motion timeout=abc>
+<set config(set="yes")>
+<set config(start="no")>
+
