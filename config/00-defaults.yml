@@ -19,6 +19,11 @@
     # Maximum wait time for chatbot responses (seconds)
     chatbot_response_timeout: 5.0
 
+    # Planner dialogue wording mode:
+    # - direct: speak planner factual text directly
+    # - chatbot: chatbot_llm owns user-facing planner dialogue wording (default)
+    planner_dialogue_wording_mode: "chatbot"
+
     # Planner completion wording mode:
     # - direct: speak planner factual text directly
     # - chatbot: chatbot_llm owns user-facing completion utterance (default)

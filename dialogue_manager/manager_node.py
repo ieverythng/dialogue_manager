@@ -14,6 +14,8 @@
 
 """Main Dialogue Manager ROS2 node."""
 
+import time
+
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from hri_actions_msgs.msg import ClosedCaption, Intent
 from planner_common import parse_json_object
@@ -65,6 +67,8 @@ class DialogueManagerNode(LifecycleNode):
         # Timers
         self._diag_timer = None
         self._planner_dialogue_act_sub = None
+        self._last_planner_dialogue_signature = ''
+        self._last_planner_dialogue_ts = 0.0
 
         self._declare_parameters()
         self.get_logger().info('Dialogue Manager node created, awaiting configuration.')
@@ -118,9 +122,21 @@ class DialogueManagerNode(LifecycleNode):
             )
         )
         self.declare_parameter(
-            'planner_completion_wording_mode', 'direct',
+            'planner_dialogue_wording_mode', 'chatbot',
+            ParameterDescriptor(
+                description='How planner dialogue-act wording is produced: direct or chatbot.'
+            )
+        )
+        self.declare_parameter(
+            'planner_completion_wording_mode', 'chatbot',
             ParameterDescriptor(
                 description='How notify_completion wording is produced: direct or chatbot.'
+            )
+        )
+        self.declare_parameter(
+            'planner_dialogue_dedupe_window_sec', 1.5,
+            ParameterDescriptor(
+                description='TTL window used to suppress duplicate planner dialogue acts.'
             )
         )
         self.declare_parameter(
@@ -329,6 +345,12 @@ class DialogueManagerNode(LifecycleNode):
             return
 
         dialogue_act = PlannerDialogueAct.from_payload(payload)
+        if self._is_duplicate_planner_dialogue_act(dialogue_act):
+            self.get_logger().debug(
+                '[PLANNER ACT] Ignoring duplicate act=%s goal_id=%s within dedupe window'
+                % (dialogue_act.act, dialogue_act.goal_id)
+            )
+            return
         if dialogue_act.act == 'acknowledge':
             self.get_logger().debug(
                 '[PLANNER ACT] Ignoring acknowledge act for goal_id=%s to avoid duplicate speech'
@@ -336,10 +358,8 @@ class DialogueManagerNode(LifecycleNode):
             )
             return
 
-        if (
-            dialogue_act.act == 'notify_completion'
-            and self._use_chatbot_completion_wording()
-            and self._ask_chatbot_for_planner_reply(dialogue_act)
+        if self._use_chatbot_planner_wording(dialogue_act) and self._ask_chatbot_for_planner_reply(
+            dialogue_act
         ):
             return
 
@@ -364,6 +384,23 @@ class DialogueManagerNode(LifecycleNode):
             priority=_planner_tts_priority(dialogue_act.priority),
         )
 
+    def _use_chatbot_planner_wording(self, dialogue_act: PlannerDialogueAct) -> bool:
+        """Return whether one planner dialogue act should be rendered by chatbot_llm."""
+        mode = str(
+            self.get_parameter('planner_dialogue_wording_mode').get_parameter_value().string_value
+        ).strip().lower()
+        if mode not in ('direct', 'chatbot'):
+            self.get_logger().warn(
+                '[PLANNER ACT] Invalid planner_dialogue_wording_mode=%s; falling back to direct'
+                % mode
+            )
+            mode = 'direct'
+        if mode == 'chatbot':
+            return True
+        if dialogue_act.act == 'notify_completion':
+            return self._use_chatbot_completion_wording()
+        return False
+
     def _use_chatbot_completion_wording(self) -> bool:
         """Return whether completion wording should be delegated to chatbot_llm."""
         use_llm_override = bool(
@@ -384,25 +421,47 @@ class DialogueManagerNode(LifecycleNode):
         return mode == 'chatbot'
 
     def _ask_chatbot_for_planner_reply(self, dialogue_act: PlannerDialogueAct) -> bool:
-        """Route completed planner tasks back through chatbot_llm for wording."""
+        """Route planner dialogue wording through chatbot_llm using structured context."""
         if self._chatbot_client is None:
             return False
-        completion_context = _planner_completion_context(dialogue_act)
-        if not completion_context:
+        dialogue_context = _planner_dialogue_context(dialogue_act)
+        if not dialogue_context:
             return False
-        sent = self._chatbot_client.send_planner_completion_context(completion_context)
+        sent = self._chatbot_client.send_planner_dialogue_context(dialogue_context)
         if sent:
             self.get_logger().info(
-                '[PLANNER ACT] Requested chatbot wording for goal_id=%s'
-                % dialogue_act.goal_id
+                '[PLANNER ACT] Requested chatbot wording for act=%s goal_id=%s'
+                % (dialogue_act.act, dialogue_act.goal_id)
             )
         return sent
+
+    def _is_duplicate_planner_dialogue_act(self, dialogue_act: PlannerDialogueAct) -> bool:
+        window_sec = float(
+            self.get_parameter('planner_dialogue_dedupe_window_sec').get_parameter_value().double_value
+        )
+        if window_sec <= 0.0:
+            return False
+        signature = _planner_dialogue_signature(dialogue_act)
+        now = time.monotonic()
+        if (
+            signature
+            and signature == self._last_planner_dialogue_signature
+            and (now - self._last_planner_dialogue_ts) <= window_sec
+        ):
+            return True
+        self._last_planner_dialogue_signature = signature
+        self._last_planner_dialogue_ts = now
+        return False
 
 
 def _planner_dialogue_text(dialogue_act: PlannerDialogueAct) -> str:
     """Resolve planner dialogue text, preferring planner-provided wording."""
     act = str(dialogue_act.act or '').strip()
     text_hint = str(dialogue_act.text_hint or '').strip()
+    if act in {'ask_clarification', 'ask_for_help'}:
+        question_text = _planner_question_text(dialogue_act, text_hint)
+        if question_text:
+            return question_text
     if text_hint:
         return text_hint
     context = dict(dialogue_act.context or {})
@@ -424,11 +483,62 @@ def _planner_dialogue_text(dialogue_act: PlannerDialogueAct) -> str:
         'notify_completion': 'I finished that task.',
         'notify_cancellation': 'Okay, I will stop working on that.',
     }
+    if act in {'ask_clarification', 'ask_for_help'}:
+        question_text = _planner_question_text(
+            dialogue_act,
+            str(dialogue_act.reason or '').strip(),
+        )
+        if question_text:
+            return question_text
     if act in {'explain_failure', 'ask_for_help'}:
         return fallback_by_act.get(act, '').strip()
     if dialogue_act.reason:
         return str(dialogue_act.reason).strip()
     return fallback_by_act.get(act, '').strip()
+
+
+def _planner_question_text(dialogue_act: PlannerDialogueAct, base_text: str) -> str:
+    """Render ask_* planner dialogue acts as explicit user-facing questions."""
+    act = str(dialogue_act.act or '').strip()
+    clean_base = str(base_text or '').strip()
+    if clean_base.endswith('?'):
+        return clean_base
+
+    slots = [str(item).strip() for item in list(dialogue_act.slots_needed or []) if str(item).strip()]
+    slot_phrase = _planner_slot_phrase(slots)
+
+    if act == 'ask_clarification':
+        question = (
+            f'Could you clarify {slot_phrase}?'
+            if slot_phrase
+            else 'Could you clarify what you want me to do next?'
+        )
+    elif act == 'ask_for_help':
+        question = (
+            f'How should I proceed with {slot_phrase}?'
+            if slot_phrase
+            else 'What should I try next?'
+        )
+    else:
+        return clean_base
+
+    if clean_base:
+        trimmed = clean_base.rstrip()
+        if trimmed and trimmed[-1] not in '.!?':
+            trimmed = f'{trimmed}.'
+        return f'{trimmed} {question}'.strip()
+    return question
+
+
+def _planner_slot_phrase(slots: list[str]) -> str:
+    """Turn planner slots into a short spoken phrase."""
+    if not slots:
+        return ''
+    if len(slots) == 1:
+        return slots[0]
+    if len(slots) == 2:
+        return f'{slots[0]} and {slots[1]}'
+    return f"{', '.join(slots[:-1])}, and {slots[-1]}"
 
 
 def _planner_completion_context(dialogue_act: PlannerDialogueAct) -> dict:
@@ -462,6 +572,38 @@ def _planner_completion_context(dialogue_act: PlannerDialogueAct) -> dict:
     }
 
 
+def _planner_dialogue_context(dialogue_act: PlannerDialogueAct) -> dict:
+    """Extract one planner dialogue act context for chatbot_llm wording."""
+    act = str(dialogue_act.act or '').strip().lower()
+    if not act:
+        return {}
+    context = dict(dialogue_act.context or {})
+    payload = {
+        'act': act,
+        'goal_id': str(dialogue_act.goal_id or '').strip(),
+        'goal_token': str(getattr(dialogue_act, 'goal_token', '') or dialogue_act.goal_id or '').strip(),
+        'plan_id': str(dialogue_act.plan_id or '').strip(),
+        'plan_version': int(dialogue_act.plan_version or 0),
+        'reason': str(dialogue_act.reason or '').strip(),
+        'text_hint': str(dialogue_act.text_hint or '').strip(),
+        'await_user_response': bool(dialogue_act.await_user_response),
+        'slots_needed': [
+            str(item).strip()
+            for item in list(dialogue_act.slots_needed or [])
+            if str(item).strip()
+        ],
+        'context': context,
+    }
+    if act == 'notify_completion':
+        payload['completion_context'] = _planner_completion_context(dialogue_act)
+    if not any(
+        payload.get(key)
+        for key in ('reason', 'text_hint', 'slots_needed', 'context', 'completion_context')
+    ):
+        return {}
+    return payload
+
+
 def _planner_tts_priority(priority_name: str) -> int:
     """Map planner dialogue priority labels onto the local TTS priority scale."""
     return {
@@ -470,3 +612,18 @@ def _planner_tts_priority(priority_name: str) -> int:
         'high': 192,
         'critical': 255,
     }.get(str(priority_name or '').strip().lower(), 128)
+
+
+def _planner_dialogue_signature(dialogue_act: PlannerDialogueAct) -> str:
+    """Build one stable signature used for duplicate planner act suppression."""
+    parts = (
+        str(dialogue_act.goal_id or '').strip(),
+        str(getattr(dialogue_act, 'goal_token', '') or '').strip(),
+        str(dialogue_act.plan_id or '').strip(),
+        str(int(dialogue_act.plan_version or 0)),
+        str(dialogue_act.act or '').strip().lower(),
+        str(dialogue_act.text_hint or '').strip(),
+        str(dialogue_act.reason or '').strip(),
+        str(bool(dialogue_act.await_user_response)),
+    )
+    return '|'.join(parts).strip('|')

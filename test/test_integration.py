@@ -294,6 +294,14 @@ class SayActionClient(Node):
 # =============================================================================
 
 
+def _spin_until_future_done(executor, future, timeout_sec: float = 5.0) -> None:
+    """Spin until a future completes without re-processing action goal responses."""
+    start = time.time()
+    while not future.done() and time.time() - start < timeout_sec:
+        executor.spin_once(timeout_sec=0.1)
+    assert future.done(), 'future timed out after %.1fs' % timeout_sec
+
+
 @pytest.fixture(scope='module')
 def rclpy_context():
     """Initialize rclpy for the test module."""
@@ -514,24 +522,24 @@ class TestDialogueManagerSayAction:
         goal.meta.priority = 128
         future = say_client.send_goal_async(goal)
 
-        # Spin until goal accepted
-        start = time.time()
-        while not future.done() and time.time() - start < 5.0:
-            executor.spin_once(timeout_sec=0.1)
-
-        assert future.done()
+        _spin_until_future_done(executor, future)
         goal_handle = future.result()
         assert goal_handle.accepted
 
-        # Wait for TTS to receive
-        result_future = goal_handle.get_result_async()
-        start = time.time()
-        while not result_future.done() and time.time() - start < 5.0:
+        # Poll for TTS side effects instead of waiting on get_result_async().
+        # The latter can trigger duplicate goal-acceptance races in rclpy action
+        # clients when combined with MultiThreadedExecutor.
+        deadline = time.time() + 5.0
+        while (
+            'Integration test speech' not in mock_tts.get_spoken_texts()
+            and time.time() < deadline
+        ):
             executor.spin_once(timeout_sec=0.1)
 
         assert 'Integration test speech' in mock_tts.get_spoken_texts()
 
         executor.shutdown()
+        mock_tts.destroy()
         dm_node.destroy_node()
         mock_tts.destroy_node()
         client_node.destroy_node()

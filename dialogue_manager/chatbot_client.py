@@ -307,8 +307,22 @@ class ChatbotClient:
         response_callback: Optional[Callable] = None,
     ) -> bool:
         """Request chatbot-owned completion wording from structured execution facts."""
+        return self.send_planner_dialogue_context(
+            {
+                'act': 'notify_completion',
+                'completion_context': dict(completion_context or {}),
+            },
+            response_callback=response_callback,
+        )
+
+    def send_planner_dialogue_context(
+        self,
+        dialogue_context: dict,
+        response_callback: Optional[Callable] = None,
+    ) -> bool:
+        """Request chatbot-owned wording from one planner dialogue-act context."""
         payload = {
-            'planner_completion': dict(completion_context or {}),
+            'planner_dialogue': dict(dialogue_context or {}),
         }
         return self.send_default_system_input(
             json.dumps(payload, sort_keys=True, separators=(',', ':')),

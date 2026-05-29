@@ -68,6 +68,9 @@ All topics/services exist only in `active` state. Actions exist in both `configu
 | `markup_libraries` | string[] | `["config/00-default_markup_libraries.json"]` | Markup definition files |
 | `disabled_markup_actions` | string[] | `["motion"]` | Markup actions to skip |
 | `planner_dialogue_act_topic` | string | `"/planner/dialogue_act"` | Planner-owned asynchronous dialogue-act topic |
+| `planner_dialogue_wording_mode` | string | `"chatbot"` | `chatbot` routes planner dialogue wording through `chatbot_llm`; `direct` speaks planner text directly |
+| `planner_completion_wording_mode` | string | `"chatbot"` | Compatibility override for `notify_completion` when global dialogue wording mode is `direct` |
+| `use_llm_completion_wording` | bool | `false` | Legacy compatibility flag that forces chatbot completion wording |
 
 ### Topics
 
@@ -77,7 +80,7 @@ All topics/services exist only in `active` state. Actions exist in both `configu
 |-------|------|-------------|
 | `/humans/voices/tracked` | `hri_msgs/IdsList` | Tracked voice IDs |
 | `/humans/voices/<id>/speech` | `hri_msgs/LiveSpeech` | User speech input |
-| `/planner/dialogue_act` | `std_msgs/String` | Planner-owned asynchronous speech acts realized through the existing TTS seam |
+| `/planner/dialogue_act` | `std_msgs/String` | Planner-owned asynchronous dialogue acts; wording can be routed through `chatbot_llm` before TTS |
 
 #### Published
 

@@ -254,9 +254,38 @@ class TestChatbotClientSendInput:
         request = mock_interaction_client.call_async.call_args.args[0]
         payload = json.loads(request.input)
         assert payload == {
-            'planner_completion': {
-                'goal_text': 'scan the room',
-                'result_summary': 'I found one person.',
+            'planner_dialogue': {
+                'act': 'notify_completion',
+                'completion_context': {
+                    'goal_text': 'scan the room',
+                    'result_summary': 'I found one person.',
+                },
+            }
+        }
+
+    def test_send_planner_dialogue_context_wraps_structured_payload(self):
+        """Planner dialogue context is wrapped in planner_dialogue envelope."""
+        mock_interaction_client = MagicMock()
+        mock_interaction_client.call_async.return_value = MagicMock()
+        self.client._interaction_client = mock_interaction_client
+
+        role = DialogueRole(name='__default__')
+        chatbot_goal_id = uuid4()
+        dialogue = Dialogue(role=role, chatbot_goal_id=chatbot_goal_id)
+        self.mock_dialogue_manager.add_dialogue(dialogue)
+        self.client._default_dialogue_id = dialogue.dialogue_id
+
+        result = self.client.send_planner_dialogue_context(
+            {'act': 'ask_clarification', 'reason': 'please confirm the target'}
+        )
+
+        assert result is True
+        request = mock_interaction_client.call_async.call_args.args[0]
+        payload = json.loads(request.input)
+        assert payload == {
+            'planner_dialogue': {
+                'act': 'ask_clarification',
+                'reason': 'please confirm the target',
             }
         }
 

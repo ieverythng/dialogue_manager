@@ -15,6 +15,8 @@
 """Integration tests for manager_node.py lifecycle node."""
 
 from dialogue_manager.manager_node import DialogueManagerNode
+from dialogue_manager.manager_node import _planner_dialogue_context
+from dialogue_manager.manager_node import _planner_dialogue_signature
 from dialogue_manager.manager_node import _planner_completion_context
 from dialogue_manager.manager_node import _planner_dialogue_text
 from planner_common import PlannerDialogueAct
@@ -83,26 +85,127 @@ def test_planner_dialogue_text_prefers_structured_scan_summary_text() -> None:
     )
     assert _planner_dialogue_text(act) == 'I found one person (id: anonymous_person_1).'
 
-    def test_parameters_declared(self, rclpy_context):
-        """All parameters are declared on creation."""
-        node = DialogueManagerNode()
 
-        # Check core parameters exist
-        assert node.has_parameter('chatbot')
-        assert node.has_parameter('enable_default_chat')
-        assert node.has_parameter('default_chat_role')
-        assert node.has_parameter('default_chat_configuration')
+def test_planner_dialogue_text_turns_ask_for_help_statement_into_question() -> None:
+    act = PlannerDialogueAct.from_payload(
+        {
+            'act': 'ask_for_help',
+            'goal_id': 'goal_help_1',
+            'reason': 'I could not find closest_object.',
+            'text_hint': 'I could not find closest_object.',
+            'await_user_response': True,
+            'slots_needed': ['scan'],
+        }
+    )
+    assert (
+        _planner_dialogue_text(act)
+        == 'I could not find closest_object. How should I proceed with scan?'
+    )
 
-        node.destroy_node()
 
-    def test_default_parameter_values(self, rclpy_context):
-        """Default parameter values are correct."""
-        node = DialogueManagerNode()
+def test_planner_dialogue_text_turns_ask_clarification_statement_into_question() -> None:
+    act = PlannerDialogueAct.from_payload(
+        {
+            'act': 'ask_clarification',
+            'goal_id': 'goal_clarify_1',
+            'reason': 'I could not find cup uduka.',
+            'text_hint': 'I could not find cup uduka.',
+            'await_user_response': True,
+        }
+    )
+    assert (
+        _planner_dialogue_text(act)
+        == 'I could not find cup uduka. Could you clarify what you want me to do next?'
+    )
 
-        assert node.get_parameter('chatbot').value == 'chatbot'
-        assert node.get_parameter('enable_default_chat').value is False
 
-        node.destroy_node()
+def test_planner_dialogue_context_exports_structured_payload() -> None:
+    act = PlannerDialogueAct.from_payload(
+        {
+            'act': 'ask_clarification',
+            'goal_id': 'goal_1',
+            'goal_token': 'goal_1:__default__:1',
+            'plan_id': 'plan_1',
+            'plan_version': 2,
+            'reason': 'target is ambiguous',
+            'text_hint': 'Could you specify which cup?',
+            'await_user_response': True,
+            'slots_needed': ['target'],
+            'context': {'goal_text': 'bring the cup'},
+        }
+    )
+
+    payload = _planner_dialogue_context(act)
+
+    assert payload['act'] == 'ask_clarification'
+    assert payload['goal_id'] == 'goal_1'
+    assert payload['plan_id'] == 'plan_1'
+    assert payload['plan_version'] == 2
+    assert payload['await_user_response'] is True
+    assert payload['slots_needed'] == ['target']
+    assert payload['text_hint'] == 'Could you specify which cup?'
+
+
+def test_planner_dialogue_signature_stable_for_same_act() -> None:
+    act = PlannerDialogueAct.from_payload(
+        {
+            'act': 'ask_clarification',
+            'goal_id': 'goal_1',
+            'goal_token': 'goal_1:tok',
+            'plan_id': 'plan_1',
+            'plan_version': 1,
+            'text_hint': 'Which cup?',
+            'reason': 'ambiguous target',
+            'await_user_response': True,
+        }
+    )
+    same_act = PlannerDialogueAct.from_payload(
+        {
+            'act': 'ask_clarification',
+            'goal_id': 'goal_1',
+            'goal_token': 'goal_1:tok',
+            'plan_id': 'plan_1',
+            'plan_version': 1,
+            'text_hint': 'Which cup?',
+            'reason': 'ambiguous target',
+            'await_user_response': True,
+        }
+    )
+
+    assert _planner_dialogue_signature(act) == _planner_dialogue_signature(same_act)
+
+
+def test_planner_dialogue_signature_changes_for_plan_version() -> None:
+    act_v1 = PlannerDialogueAct.from_payload(
+        {'act': 'notify_completion', 'goal_id': 'goal_1', 'plan_id': 'plan_1', 'plan_version': 1}
+    )
+    act_v2 = PlannerDialogueAct.from_payload(
+        {'act': 'notify_completion', 'goal_id': 'goal_1', 'plan_id': 'plan_1', 'plan_version': 2}
+    )
+
+    assert _planner_dialogue_signature(act_v1) != _planner_dialogue_signature(act_v2)
+
+def test_parameters_declared(rclpy_context):
+    """All parameters are declared on creation."""
+    node = DialogueManagerNode()
+
+    # Check core parameters exist
+    assert node.has_parameter('chatbot')
+    assert node.has_parameter('enable_default_chat')
+    assert node.has_parameter('default_chat_role')
+    assert node.has_parameter('default_chat_configuration')
+
+    node.destroy_node()
+
+
+def test_default_parameter_values(rclpy_context):
+    """Default parameter values are correct."""
+    node = DialogueManagerNode()
+
+    assert node.get_parameter('chatbot').value == 'chatbot'
+    assert node.get_parameter('enable_default_chat').value is False
+
+    node.destroy_node()
 
 
 class TestDialogueManagerNodeConfigure:
