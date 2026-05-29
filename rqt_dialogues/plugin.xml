@@ -1,0 +1,13 @@
+<library path="rqt_dialogues">
+  <class name="Dialogues" type="rqt_dialogues.plugin.DialoguesPlugin" base_class_type="rqt_gui_py::Plugin">
+    <description>Visualize active and archived dialogues from the Dialogue Manager.</description>
+    <qtgui>
+      <group>
+        <label>Visualization</label>
+      </group>
+      <label>Dialogues</label>
+      <icon type="theme">user-available</icon>
+      <statustip>Live view of dialogue_manager's internal state.</statustip>
+    </qtgui>
+  </class>
+</library>

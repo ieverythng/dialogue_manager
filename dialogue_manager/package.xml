@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<package format="3">
+    <name>dialogue_manager</name>
+    <version>2.2.0</version>
+    <description>ROS4HRI-compatible dialogue manager</description>
+
+  <maintainer email="severin.lemaignan@iiia.csic.es">Séverin Lemaignan</maintainer>
+  <author email="severin.lemaignan@iiia.csic.es">Séverin Lemaignan</author>
+
+  <license>Apache License 2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>lifecycle_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>diagnostic_msgs</depend>
+
+  <exec_depend>action_msgs</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>launch_pal</exec_depend>
+
+  <exec_depend>communication_skills</exec_depend>
+  <exec_depend>chatbot_msgs</exec_depend>
+  <exec_depend>hri_msgs</exec_depend>
+  <exec_depend>hri_actions_msgs</exec_depend>
+  <exec_depend>planner_common</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+      <build_type>ament_python</build_type>
+      <architecture_independent />
+      <implements type="skill" package="communication_skills" id="chat" />
+      <implements type="skill" package="communication_skills" id="ask" />
+      <implements type="skill" package="communication_skills" id="say" />
+  </export>
+</package>

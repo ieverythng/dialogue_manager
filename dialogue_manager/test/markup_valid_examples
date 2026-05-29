@@ -1,0 +1,37 @@
+Hello, I'm a robot.
+<set expression(happy)> <start motion(wave)> Hello! <wait motion timeout=1> <set expression(neutral)>
+<start motion(wave)> Hello! <pause(2)> Anything new going on? <wait motion>
+<do something>
+<stop animation>
+<set tts(hello, world)>
+<start motor(speed=42)>
+<start motor(100, direction=forward)>
+<start effect(true, false, null)>
+<set config(name="quoted value")>
+<set config(name='single quoted')>
+<start led(color=[1,2,3])>
+<start led(color=[1, 2, 3,])>
+<start config(items=[true, "hello", 42])>
+<set volume(0.5)>
+<set gain(-3)>
+<set gain(+1.5e2)>
+<set addr(0xFF)>
+<pause(0)>
+<pause(10)>
+<wait motor timeout=5>
+<stop motor timeout=10>
+Hello @name|"default"! How are you?
+@user.name|"stranger", welcome!
+<start tts(@msg|"hi")>
+<start effect(@user.pref|"default")>
+<set config(key=@setting|"fallback")>
+<set config(key=@setting)>
+<start motor(speed=@user.speed|100)>
+<set expression(happy)> <start motion(wave)> <pause(1)> <wait motion> <set expression(neutral)>
+Plain text with no actions at all.
+<start a(b, c, d, e)>
+<set x(a=1, b=2, c=3)>
+<set x(p, q, a=1, b=2)>
+<start led(colors=[], fallback=[1])>
+<set config(timeout="5s", tts="enabled")>
+<start tts(@msg|"hello there")>

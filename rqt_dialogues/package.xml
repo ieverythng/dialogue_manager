@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>rqt_dialogues</name>
+  <version>2.2.0</version>
+  <description>rqt plugin for inspecting the dialogue_manager in real time.</description>
+
+  <maintainer email="severin.lemaignan@iiia.csic.es">Séverin Lemaignan</maintainer>
+  <author email="severin.lemaignan@iiia.csic.es">Séverin Lemaignan</author>
+
+  <license>Apache License 2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>rqt_gui</depend>
+  <depend>rqt_gui_py</depend>
+  <depend>python3-pyside2.qtcore</depend>
+  <depend>python3-pyside2.qtgui</depend>
+  <depend>python3-pyside2.qtwidgets</depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+    <architecture_independent />
+    <rqt_gui plugin="${prefix}/plugin.xml" />
+  </export>
+</package>
