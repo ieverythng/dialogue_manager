@@ -67,6 +67,11 @@ both `configured` and `active` states but reject goals in the former.
 | `markup_libraries` | string[] | `["config/00-default_actions.yaml"]` | Markup definition files. |
 | `disabled_markup_actions` | string[] | `["motion"]` | Markup actions to skip. |
 | `conversations_storage_dir` | string | `"~/.ros/dialogue_manager/conversations"` | Where per-person/group histories are persisted (empty = in-memory only). |
+| `planner_dialogue_act_topic` | string | `"/planner/dialogue_act"` | Planner-owned asynchronous dialogue-act topic. |
+| `planner_dialogue_wording_mode` | string | `"chatbot"` | `chatbot` routes planner wording through `chatbot_llm`; `direct` speaks planner text directly. |
+| `planner_completion_wording_mode` | string | `"chatbot"` | Compatibility override for `notify_completion` when global planner wording mode is `direct`. |
+| `planner_dialogue_dedupe_window_sec` | float | `1.5` | Duplicate planner act suppression window (seconds). Set `<= 0` to disable dedupe. |
+| `use_llm_completion_wording` | bool | `false` | Legacy completion-wording override. Prefer `planner_completion_wording_mode`. |
 
 ### Topics
 
@@ -77,6 +82,7 @@ both `configured` and `active` states but reject goals in the former.
 | `/humans/voices/tracked` | `hri_msgs/IdsList` | Tracked voice IDs (TRANSIENT_LOCAL). |
 | `/humans/voices/<id>/speech` | `hri_msgs/LiveSpeech` | User speech input per voice. |
 | `/humans/interactions/groups` | `hri_msgs/Group` | Group membership (TRANSIENT_LOCAL); empty `members` signals dispersal. |
+| `/planner/dialogue_act` (configurable) | `std_msgs/String` | Planner dialogue-act seam consumed by Dialogue Manager. Live stack may relay through `nao_orchestrator`. |
 
 #### Published
 
@@ -110,13 +116,13 @@ both `configured` and `active` states but reject goals in the former.
 
 | Action | Interface | Description |
 |--------|-----------|-------------|
-| `<chatbot>/start_dialogue` | `chatbot_msgs/Dialogue` | Open a chatbot dialogue (one per per-person Dialogue). |
 | `<say_action>` (default `/tts/say`) | `communication_skills/Say` | Speak markup-stripped text. |
 
 ### Service Clients
 
 | Service | Interface | Description |
 |---------|-----------|-------------|
+| `<chatbot>/prepare_dialogue` | `chatbot_msgs/PrepareDialogue` | Optional chatbot warm-up when a dialogue is created. |
 | `<chatbot>/dialogue_interaction` | `chatbot_msgs/DialogueInteraction` | Send input, get response. |
 | `<chatbot>/summarize` | (optional) | Used when present to LLM-summarise old dialogues at session end. |
 
