@@ -43,8 +43,6 @@ def test_parameters_declared(rclpy_context):
     assert node.has_parameter('chatbot')
     assert node.has_parameter('enable_default_chat')
     assert node.has_parameter('planner_dialogue_act_topic')
-    assert node.has_parameter('planner_completion_wording_mode')
-    assert node.has_parameter('use_llm_completion_wording')
     node.destroy_node()
 
 

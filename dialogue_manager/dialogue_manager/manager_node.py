@@ -18,7 +18,12 @@ import json
 import os
 from pathlib import Path
 
-from ament_index_python.packages import get_package_share_directory
+try:  # pragma: no cover - runtime dependency
+    from ament_index_python.packages import get_package_share_directory
+except ImportError:  # pragma: no cover - unit-test fallback
+
+    def get_package_share_directory(_package_name: str) -> str:
+        raise RuntimeError('ament_index_python is unavailable in this environment')
 from chatbot_msgs.msg import DialogueRole
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from hri_actions_msgs.msg import ClosedCaption, Intent
@@ -162,18 +167,6 @@ class DialogueManagerNode(LifecycleNode):
             'planner_dialogue_act_topic', '/planner/dialogue_act',
             ParameterDescriptor(
                 description='Planner-owned dialogue-act topic for asynchronous execution feedback.'
-            )
-        )
-        self.declare_parameter(
-            'planner_completion_wording_mode', 'chatbot',
-            ParameterDescriptor(
-                description='How notify_completion wording is produced: direct or chatbot.'
-            )
-        )
-        self.declare_parameter(
-            'use_llm_completion_wording', False,
-            ParameterDescriptor(
-                description='Legacy override: when true, route notify_completion wording through chatbot.'
             )
         )
 
@@ -607,11 +600,12 @@ class DialogueManagerNode(LifecycleNode):
             )
             return
 
-        if (
-            dialogue_act.act == 'notify_completion'
-            and self._use_chatbot_completion_wording()
-            and self._ask_chatbot_for_planner_reply(dialogue_act)
-        ):
+        if dialogue_act.act == 'notify_completion':
+            if self._ask_chatbot_for_planner_reply(dialogue_act):
+                return
+            self.get_logger().warn(
+                '[PLANNER ACT] Completion act ignored because chatbot relay was unavailable'
+            )
             return
 
         speech_text = _planner_dialogue_text(dialogue_act)
@@ -634,25 +628,6 @@ class DialogueManagerNode(LifecycleNode):
             speech_text,
             priority=_planner_say_priority(dialogue_act.priority),
         )
-
-    def _use_chatbot_completion_wording(self) -> bool:
-        """Return whether completion wording should be delegated to chatbot_llm."""
-        use_llm_override = bool(
-            self.get_parameter('use_llm_completion_wording').get_parameter_value().bool_value
-        )
-        if use_llm_override:
-            return True
-
-        mode = str(
-            self.get_parameter('planner_completion_wording_mode').get_parameter_value().string_value
-        ).strip().lower()
-        if mode not in ('direct', 'chatbot'):
-            self.get_logger().warn(
-                '[PLANNER ACT] Invalid planner_completion_wording_mode=%s; falling back to direct'
-                % mode
-            )
-            return False
-        return mode == 'chatbot'
 
     def _ask_chatbot_for_planner_reply(self, dialogue_act: PlannerDialogueAct) -> bool:
         """Route planner completion facts through chatbot_llm for user-facing wording."""
@@ -794,7 +769,6 @@ def _planner_completion_context(dialogue_act: PlannerDialogueAct) -> dict:
         return {}
     return {
         'goal_id': str(dialogue_act.goal_id or '').strip(),
-        'goal_token': str(getattr(dialogue_act, 'goal_token', '') or dialogue_act.goal_id or '').strip(),
         'goal_text': goal_text,
         'result_summary': result_summary,
         'result_payload': normalized_payload,
