@@ -376,6 +376,36 @@ class TestSpeechHandlerOnSpeech:
 
         self.mock_intents_pub.publish.assert_called_once()
 
+    def test_on_speech_ignores_duplicate_final_transcript(self):
+        """Repeated final transcript within debounce window is ignored."""
+        self.handler._chatbot_enabled = False
+        self.handler._wall_time = MagicMock(side_effect=[10.0, 10.6])
+
+        msg = LiveSpeech()
+        msg.final = 'Look left please'
+        msg.locale = 'en'
+
+        self.handler._on_speech('voice1', msg)
+        self.handler._on_speech('voice1', msg)
+
+        self.mock_captions_pub.publish.assert_called_once()
+        self.mock_intents_pub.publish.assert_called_once()
+
+    def test_on_speech_allows_same_transcript_after_debounce_window(self):
+        """Same transcript after debounce window should still be processed."""
+        self.handler._chatbot_enabled = False
+        self.handler._wall_time = MagicMock(side_effect=[10.0, 12.0])
+
+        msg = LiveSpeech()
+        msg.final = 'Look left please'
+        msg.locale = 'en'
+
+        self.handler._on_speech('voice1', msg)
+        self.handler._on_speech('voice1', msg)
+
+        assert self.mock_captions_pub.publish.call_count == 2
+        assert self.mock_intents_pub.publish.call_count == 2
+
 
 class TestSpeechHandlerGroupRouting:
     """Speech from a group member records into speaker + co-members + group."""

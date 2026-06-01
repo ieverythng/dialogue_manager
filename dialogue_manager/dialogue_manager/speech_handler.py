@@ -15,6 +15,7 @@
 """Speech input handler for the Dialogue Manager."""
 
 import json
+import time
 
 from chatbot_msgs.msg import DialogueRole
 from hri_actions_msgs.msg import ClosedCaption, Intent
@@ -80,6 +81,8 @@ class SpeechHandler:
         self._voice_subscriptions: dict[str, Subscription] = {}
         self._voices_sub: Subscription | None = None
         self._chatbot_enabled = True
+        self._speech_duplicate_window_sec = 1.5
+        self._last_final_speech: dict[str, tuple[str, str, float]] = {}
 
         self._default_chat_role: str = ''
         self._default_chat_role_config: str = '{}'
@@ -87,6 +90,11 @@ class SpeechHandler:
     def _now(self) -> float:
         """Return the current time in epoch seconds, from the node clock."""
         return self._node.get_clock().now().nanoseconds / 1e9
+
+    @staticmethod
+    def _wall_time() -> float:
+        """Return monotonic wall time for short-lived debounce checks."""
+        return time.monotonic()
 
     def set_chatbot_enabled(self, enabled: bool) -> None:
         """Set whether chatbot is enabled for speech routing."""
@@ -159,22 +167,29 @@ class SpeechHandler:
 
     def _on_speech(self, voice_id: str, msg: LiveSpeech) -> None:
         """Handle incoming speech from a user."""
-        if not msg.final:
+        text = str(msg.final or '').strip()
+        if not text:
             return  # Only process final speech
+        locale = str(msg.locale or '').strip()
+        if self._is_duplicate_final_speech(voice_id, text, locale):
+            self._node.get_logger().warn(
+                f'[SPEECH INPUT] Ignoring duplicate final speech for voice "{voice_id}": "{text}"'
+            )
+            return
 
         self._node.get_logger().info(
-            f'[SPEECH INPUT] voice_id="{voice_id}": "{msg.final}" '
+            f'[SPEECH INPUT] voice_id="{voice_id}": "{text}" '
             f'(locale={msg.locale}, confidence={msg.confidence:.2f})'
         )
 
         if (self._chatbot_client is not None
                 and self._chatbot_client.waiting_for_response):
             self._node.get_logger().warn(
-                f'[SPEECH INPUT] Ignoring while waiting for chatbot: "{msg.final}"'
+                f'[SPEECH INPUT] Ignoring while waiting for chatbot: "{text}"'
             )
             return
 
-        self._publish_user_caption(voice_id, msg.final, msg.locale)
+        self._publish_user_caption(voice_id, text, locale)
 
         # Collect every dialogue that should receive this utterance:
         # speaker's own + each group the speaker belongs to + each
@@ -184,7 +199,7 @@ class SpeechHandler:
         recipients = self._recipient_dialogues_for_speaker(voice_id)
 
         for dialogue in recipients:
-            dialogue.add_utterance(voice_id, msg.final, self._now())
+            dialogue.add_utterance(voice_id, text, self._now())
 
         # Trigger a chatbot turn for the speaker's dialogue (the first
         # recipient when one exists). The chatbot is stateless wrt.
@@ -209,7 +224,27 @@ class SpeechHandler:
         self._node.get_logger().info(
             '[SPEECH INPUT] Publishing as RAW_USER_INPUT'
         )
-        self._publish_raw_intent(msg.final, voice_id, msg.locale)
+        self._publish_raw_intent(text, voice_id, locale)
+
+    def _is_duplicate_final_speech(self, voice_id: str, text: str, locale: str) -> bool:
+        """Return True when final speech appears to be a transport duplicate."""
+        if self._speech_duplicate_window_sec <= 0.0:
+            return False
+        clean_voice = str(voice_id).strip()
+        if not clean_voice:
+            return False
+        normalized_text = ' '.join(text.strip().lower().split())
+        if not normalized_text:
+            return False
+        now = self._wall_time()
+        previous = self._last_final_speech.get(clean_voice)
+        self._last_final_speech[clean_voice] = (normalized_text, locale, now)
+        if previous is None:
+            return False
+        previous_text, previous_locale, previous_ts = previous
+        same_locale = str(previous_locale).strip() == str(locale).strip()
+        within_window = (now - float(previous_ts)) <= self._speech_duplicate_window_sec
+        return same_locale and within_window and previous_text == normalized_text
 
     def _recipient_dialogues_for_speaker(self, voice_id: str) -> list[Dialogue]:
         """
