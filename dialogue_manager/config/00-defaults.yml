@@ -19,24 +19,6 @@
     # Maximum wait time for chatbot responses (seconds)
     chatbot_response_timeout: 5.0
 
-    # Planner dialogue wording mode:
-    # - direct: speak planner factual text directly
-    # - chatbot: chatbot_llm owns user-facing planner dialogue wording (default)
-    planner_dialogue_wording_mode: "chatbot"
-
-    # Planner completion wording mode:
-    # - direct: speak planner factual text directly
-    # - chatbot: chatbot_llm owns user-facing completion utterance (default)
-    planner_completion_wording_mode: "chatbot"
-
-    # Ignore repeated planner dialogue acts with the same signature
-    # inside this time window (seconds). Set <=0 to disable dedupe.
-    planner_dialogue_dedupe_window_sec: 1.5
-
-    # Legacy override for completion wording through chatbot_llm.
-    # Prefer planner_completion_wording_mode above.
-    use_llm_completion_wording: false
-
     # Planner-owned dialogue-act topic for asynchronous execution feedback.
     planner_dialogue_act_topic: "/planner/dialogue_act"
 
