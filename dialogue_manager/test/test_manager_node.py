@@ -86,3 +86,19 @@ def test_planner_dialogue_text_prefers_structured_scan_summary_text() -> None:
         }
     )
     assert _planner_dialogue_text(act) == 'I found one person (id: anonymous_person_1).'
+
+
+def test_planner_dialogue_text_humanizes_navigation_target_missing_reason() -> None:
+    """Machine-style navigation clarification reasons must be user-facing."""
+    act = PlannerDialogueAct.from_payload(
+        {
+            'act': 'ask_clarification',
+            'goal_id': 'goal_nav_1',
+            'reason': 'missing target information for navigation',
+            'text_hint': 'missing target information for navigation',
+            'slots_needed': ['target'],
+        }
+    )
+    assert _planner_dialogue_text(act) == (
+        'I need a destination before I can navigate. Where should I go?'
+    )

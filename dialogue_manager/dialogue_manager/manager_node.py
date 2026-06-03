@@ -17,6 +17,7 @@
 import json
 import os
 from pathlib import Path
+import re
 
 try:  # pragma: no cover - runtime dependency
     from ament_index_python.packages import get_package_share_directory
@@ -718,7 +719,10 @@ class DialogueManagerNode(LifecycleNode):
 def _planner_dialogue_text(dialogue_act: PlannerDialogueAct) -> str:
     """Resolve planner dialogue text, preferring planner-provided wording."""
     act = str(dialogue_act.act or '').strip()
-    text_hint = str(dialogue_act.text_hint or '').strip()
+    text_hint = _sanitize_planner_text_hint(
+        str(dialogue_act.text_hint or '').strip(),
+        dialogue_act=dialogue_act,
+    )
     if text_hint:
         return text_hint
     context = dict(dialogue_act.context or {})
@@ -743,8 +747,63 @@ def _planner_dialogue_text(dialogue_act: PlannerDialogueAct) -> str:
     if act in {'explain_failure', 'ask_for_help'}:
         return fallback_by_act.get(act, '').strip()
     if dialogue_act.reason:
-        return str(dialogue_act.reason).strip()
+        return _sanitize_planner_text_hint(
+            str(dialogue_act.reason).strip(),
+            dialogue_act=dialogue_act,
+        )
     return fallback_by_act.get(act, '').strip()
+
+
+def _sanitize_planner_text_hint(
+    text: str,
+    *,
+    dialogue_act: PlannerDialogueAct,
+) -> str:
+    """Prevent machine-style planner reasons from being spoken verbatim."""
+    clean_text = str(text or '').strip()
+    if not clean_text:
+        return ''
+
+    act = str(dialogue_act.act or '').strip().lower()
+    lowered = ' '.join(clean_text.lower().split())
+    slots = {str(item).strip().lower() for item in dialogue_act.slots_needed if str(item).strip()}
+
+    if act == 'ask_clarification':
+        if (
+            'missing target information' in lowered
+            and 'navigation' in lowered
+        ) or slots.intersection({'target', 'destination', 'location', 'goal'}):
+            return 'I need a destination before I can navigate. Where should I go?'
+        if _looks_like_machine_planner_reason(clean_text):
+            return 'I need a bit more detail before I continue.'
+
+    if act in {'ask_for_help', 'explain_failure'} and _looks_like_machine_planner_reason(clean_text):
+        fallback = {
+            'ask_for_help': 'I need help to continue this task.',
+            'explain_failure': 'I could not complete that task.',
+        }
+        return fallback.get(act, clean_text)
+
+    return clean_text
+
+
+def _looks_like_machine_planner_reason(text: str) -> bool:
+    """Heuristic detector for terse planner/internal reason strings."""
+    clean_text = str(text or '').strip()
+    if not clean_text:
+        return False
+    lowered = ' '.join(clean_text.lower().split())
+    if (
+        'missing target information' in lowered
+        or 'retry budget exhausted' in lowered
+        or 'planner output' in lowered
+    ):
+        return True
+    if re.fullmatch(r'[a-z0-9_ \-]{8,}', lowered) and not any(ch in clean_text for ch in '.!?'):
+        machine_words = ('missing', 'failed', 'invalid', 'error', 'timeout', 'blocked')
+        if any(word in lowered for word in machine_words):
+            return True
+    return False
 
 
 def _planner_completion_context(dialogue_act: PlannerDialogueAct) -> dict:
