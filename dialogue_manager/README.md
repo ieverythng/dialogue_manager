@@ -68,10 +68,6 @@ both `configured` and `active` states but reject goals in the former.
 | `disabled_markup_actions` | string[] | `["motion"]` | Markup actions to skip. |
 | `conversations_storage_dir` | string | `"~/.ros/dialogue_manager/conversations"` | Where per-person/group histories are persisted (empty = in-memory only). |
 | `planner_dialogue_act_topic` | string | `"/planner/dialogue_act"` | Planner-owned asynchronous dialogue-act topic. |
-| `planner_dialogue_wording_mode` | string | `"chatbot"` | `chatbot` routes planner wording through `chatbot_llm`; `direct` speaks planner text directly. |
-| `planner_completion_wording_mode` | string | `"chatbot"` | Compatibility override for `notify_completion` when global planner wording mode is `direct`. |
-| `planner_dialogue_dedupe_window_sec` | float | `1.5` | Duplicate planner act suppression window (seconds). Set `<= 0` to disable dedupe. |
-| `use_llm_completion_wording` | bool | `false` | Legacy completion-wording override. Prefer `planner_completion_wording_mode`. |
 
 ### Topics
 
@@ -82,7 +78,7 @@ both `configured` and `active` states but reject goals in the former.
 | `/humans/voices/tracked` | `hri_msgs/IdsList` | Tracked voice IDs (TRANSIENT_LOCAL). |
 | `/humans/voices/<id>/speech` | `hri_msgs/LiveSpeech` | User speech input per voice. |
 | `/humans/interactions/groups` | `hri_msgs/Group` | Group membership (TRANSIENT_LOCAL); empty `members` signals dispersal. |
-| `/planner/dialogue_act` (configurable) | `std_msgs/String` | Planner dialogue-act seam consumed by Dialogue Manager. Live stack may relay through `nao_orchestrator`. |
+| `/planner/dialogue_act` (configurable) | `std_msgs/String` | Orchestrator-relayed planner dialogue acts. Dialogue Manager routes structured facts through `chatbot_llm` and owns the single Say dispatch. |
 
 #### Published
 

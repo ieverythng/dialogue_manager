@@ -17,7 +17,6 @@
 import json
 import os
 from pathlib import Path
-import re
 
 try:  # pragma: no cover - runtime dependency
     from ament_index_python.packages import get_package_share_directory
@@ -56,6 +55,7 @@ from .speech_handler import SpeechHandler
 # node is in the active state. Kept as a module constant (not a ROS param) to
 # minimize configuration surface.
 CONVERSATIONS_PERSIST_INTERVAL_SEC = 30.0
+MAX_PLANNER_ACT_EMISSION_LEDGER = 256
 
 
 class DialogueManagerNode(LifecycleNode):
@@ -104,6 +104,8 @@ class DialogueManagerNode(LifecycleNode):
         self._diag_timer = None
         self._persist_timer = None
         self._planner_dialogue_act_sub = None
+        self._planner_act_emission_order: list[str] = []
+        self._planner_act_emission_ledger: set[str] = set()
 
         self._declare_parameters()
         self.get_logger().info('Dialogue Manager node created, awaiting configuration.')
@@ -178,6 +180,8 @@ class DialogueManagerNode(LifecycleNode):
     def on_configure(self, state: State) -> TransitionCallbackReturn:
         """Configure the node: create publishers and handlers."""
         self.get_logger().info('Configuring Dialogue Manager...')
+        self._planner_act_emission_order.clear()
+        self._planner_act_emission_ledger.clear()
 
         # Conversations history (load from disk if configured)
         storage_dir_param = (
@@ -583,7 +587,7 @@ class DialogueManagerNode(LifecycleNode):
             )
 
     def _on_planner_dialogue_act(self, msg: String) -> None:
-        """Speak planner-owned asynchronous dialogue acts and route completion wording."""
+        """Route planner-owned asynchronous dialogue acts through chatbot wording."""
         if self._say_client is None:
             self.get_logger().warn('[PLANNER ACT] Ignored because Say client is unavailable')
             return
@@ -601,50 +605,60 @@ class DialogueManagerNode(LifecycleNode):
             )
             return
 
-        if dialogue_act.act == 'notify_completion':
-            if self._ask_chatbot_for_planner_reply(dialogue_act):
-                return
+        signature = _planner_dialogue_act_signature(dialogue_act)
+        if signature in self._planner_act_emission_ledger:
             self.get_logger().warn(
-                '[PLANNER ACT] Completion act ignored because chatbot relay was unavailable'
-            )
-            return
-
-        speech_text = _planner_dialogue_text(dialogue_act)
-        if not speech_text:
-            self.get_logger().debug(
-                '[PLANNER ACT] No speech text resolved for act=%s goal_id=%s'
+                '[PLANNER ACT] Ignored duplicate semantic event act=%s goal_id=%s'
                 % (dialogue_act.act, dialogue_act.goal_id)
             )
             return
+        self._remember_planner_act_emission(signature)
 
-        self.get_logger().info(
-            '[PLANNER ACT] Speaking act=%s goal_id=%s await_user_response=%s'
-            % (
-                dialogue_act.act,
-                dialogue_act.goal_id,
-                dialogue_act.await_user_response,
+        if self._ask_chatbot_for_planner_reply(dialogue_act):
+            return
+
+        fallback_text = _planner_safe_fallback_text(dialogue_act)
+        if fallback_text:
+            self.get_logger().warn(
+                '[PLANNER ACT] Chatbot relay unavailable; speaking safe fallback '
+                'act=%s goal_id=%s'
+                % (dialogue_act.act, dialogue_act.goal_id)
             )
+            self._say_client.speak(
+                fallback_text,
+                priority=_planner_say_priority(dialogue_act.priority),
+            )
+            return
+
+        self.get_logger().warn(
+            '[PLANNER ACT] act=%s goal_id=%s ignored because chatbot relay was unavailable'
+            % (dialogue_act.act, dialogue_act.goal_id)
         )
-        self._say_client.speak(
-            speech_text,
-            priority=_planner_say_priority(dialogue_act.priority),
-        )
+
+    def _remember_planner_act_emission(self, signature: str) -> None:
+        """Remember one semantic planner act in a bounded replay ledger."""
+        if not signature:
+            return
+        self._planner_act_emission_order.append(signature)
+        self._planner_act_emission_ledger.add(signature)
+        if len(self._planner_act_emission_order) <= MAX_PLANNER_ACT_EMISSION_LEDGER:
+            return
+        expired = self._planner_act_emission_order.pop(0)
+        self._planner_act_emission_ledger.discard(expired)
 
     def _ask_chatbot_for_planner_reply(self, dialogue_act: PlannerDialogueAct) -> bool:
-        """Route planner completion facts through chatbot_llm for user-facing wording."""
+        """Route planner facts through chatbot_llm for user-facing wording."""
         if self._chatbot_client is None:
             return False
-        completion_context = _planner_completion_context(dialogue_act)
-        if not completion_context:
+        planner_context = _planner_chatbot_context(dialogue_act)
+        if not planner_context:
             return False
 
         dialogue = self._planner_target_dialogue()
         if dialogue is None:
             return False
 
-        payload = {
-            'planner_completion': completion_context,
-        }
+        payload = planner_context
         dialogue.add_utterance(
             SYSTEM_SPEAKER_ID,
             json.dumps(payload, sort_keys=True, separators=(',', ':')),
@@ -654,8 +668,8 @@ class DialogueManagerNode(LifecycleNode):
         sent = self._chatbot_client.interact(dialogue)
         if sent:
             self.get_logger().info(
-                '[PLANNER ACT] Requested chatbot wording for goal_id=%s'
-                % dialogue_act.goal_id
+                '[PLANNER ACT] Requested chatbot wording for act=%s goal_id=%s'
+                % (dialogue_act.act, dialogue_act.goal_id)
             )
         return sent
 
@@ -716,96 +730,6 @@ class DialogueManagerNode(LifecycleNode):
         self._diag_pub.publish(arr)
 
 
-def _planner_dialogue_text(dialogue_act: PlannerDialogueAct) -> str:
-    """Resolve planner dialogue text, preferring planner-provided wording."""
-    act = str(dialogue_act.act or '').strip()
-    text_hint = _sanitize_planner_text_hint(
-        str(dialogue_act.text_hint or '').strip(),
-        dialogue_act=dialogue_act,
-    )
-    if text_hint:
-        return text_hint
-    context = dict(dialogue_act.context or {})
-    if act == 'notify_completion':
-        result_payload = context.get('result_payload', {})
-        if isinstance(result_payload, dict):
-            summary_text = str(result_payload.get('summary_text', '')).strip()
-            if summary_text:
-                return summary_text
-        result_summary = str(context.get('result_summary', '')).strip()
-        if result_summary:
-            return result_summary
-
-    fallback_by_act = {
-        'progress_update': 'I am working on it now.',
-        'ask_clarification': 'I need a bit more detail before I continue.',
-        'ask_for_help': 'I need help to continue this task.',
-        'explain_failure': 'I could not complete that task.',
-        'notify_completion': 'I finished that task.',
-        'notify_cancellation': 'Okay, I will stop working on that.',
-    }
-    if act in {'explain_failure', 'ask_for_help'}:
-        return fallback_by_act.get(act, '').strip()
-    if dialogue_act.reason:
-        return _sanitize_planner_text_hint(
-            str(dialogue_act.reason).strip(),
-            dialogue_act=dialogue_act,
-        )
-    return fallback_by_act.get(act, '').strip()
-
-
-def _sanitize_planner_text_hint(
-    text: str,
-    *,
-    dialogue_act: PlannerDialogueAct,
-) -> str:
-    """Prevent machine-style planner reasons from being spoken verbatim."""
-    clean_text = str(text or '').strip()
-    if not clean_text:
-        return ''
-
-    act = str(dialogue_act.act or '').strip().lower()
-    lowered = ' '.join(clean_text.lower().split())
-    slots = {str(item).strip().lower() for item in dialogue_act.slots_needed if str(item).strip()}
-
-    if act == 'ask_clarification':
-        if (
-            'missing target information' in lowered
-            and 'navigation' in lowered
-        ) or slots.intersection({'target', 'destination', 'location', 'goal'}):
-            return 'I need a destination before I can navigate. Where should I go?'
-        if _looks_like_machine_planner_reason(clean_text):
-            return 'I need a bit more detail before I continue.'
-
-    if act in {'ask_for_help', 'explain_failure'} and _looks_like_machine_planner_reason(clean_text):
-        fallback = {
-            'ask_for_help': 'I need help to continue this task.',
-            'explain_failure': 'I could not complete that task.',
-        }
-        return fallback.get(act, clean_text)
-
-    return clean_text
-
-
-def _looks_like_machine_planner_reason(text: str) -> bool:
-    """Heuristic detector for terse planner/internal reason strings."""
-    clean_text = str(text or '').strip()
-    if not clean_text:
-        return False
-    lowered = ' '.join(clean_text.lower().split())
-    if (
-        'missing target information' in lowered
-        or 'retry budget exhausted' in lowered
-        or 'planner output' in lowered
-    ):
-        return True
-    if re.fullmatch(r'[a-z0-9_ \-]{8,}', lowered) and not any(ch in clean_text for ch in '.!?'):
-        machine_words = ('missing', 'failed', 'invalid', 'error', 'timeout', 'blocked')
-        if any(word in lowered for word in machine_words):
-            return True
-    return False
-
-
 def _planner_completion_context(dialogue_act: PlannerDialogueAct) -> dict:
     """Extract structured completion context to be rendered by chatbot_llm."""
     context = dict(dialogue_act.context or {})
@@ -824,7 +748,18 @@ def _planner_completion_context(dialogue_act: PlannerDialogueAct) -> dict:
         if str(item).strip()
     ]
     normalized_payload = result_payload if isinstance(result_payload, dict) else {}
-    if not (goal_text or result_summary or text_hint or clean_intents or normalized_payload):
+    plan_outcome_summary = context.get('plan_outcome_summary', {})
+    normalized_plan_outcome = (
+        plan_outcome_summary if isinstance(plan_outcome_summary, dict) else {}
+    )
+    if not (
+        goal_text
+        or result_summary
+        or text_hint
+        or clean_intents
+        or normalized_payload
+        or normalized_plan_outcome
+    ):
         return {}
     return {
         'goal_id': str(dialogue_act.goal_id or '').strip(),
@@ -833,7 +768,69 @@ def _planner_completion_context(dialogue_act: PlannerDialogueAct) -> dict:
         'result_payload': normalized_payload,
         'text_hint': text_hint,
         'requested_intents': clean_intents,
+        'plan_outcome_summary': normalized_plan_outcome,
     }
+
+
+def _planner_chatbot_context(dialogue_act: PlannerDialogueAct) -> dict:
+    """Build the chatbot system-turn payload for a planner dialogue act."""
+    if dialogue_act.act == 'notify_completion':
+        completion_context = _planner_completion_context(dialogue_act)
+        return {'planner_completion': completion_context} if completion_context else {}
+
+    context = {
+        'act': str(dialogue_act.act or '').strip(),
+        'goal_id': str(dialogue_act.goal_id or '').strip(),
+        'plan_id': str(dialogue_act.plan_id or '').strip(),
+        'plan_version': int(dialogue_act.plan_version or 0),
+        'reason': str(dialogue_act.reason or '').strip(),
+        'text_hint': str(dialogue_act.text_hint or '').strip(),
+        'await_user_response': bool(dialogue_act.await_user_response),
+        'slots_needed': [
+            str(item).strip()
+            for item in dialogue_act.slots_needed
+            if str(item).strip()
+        ],
+        'context': dict(dialogue_act.context or {}),
+    }
+    return {'planner_dialogue': context} if context['act'] else {}
+
+
+def _planner_dialogue_act_signature(dialogue_act: PlannerDialogueAct) -> str:
+    """Build a semantic planner-act key while allowing distinct progress messages."""
+    payload = {
+        'goal_id': str(dialogue_act.goal_id or '').strip(),
+        'plan_id': str(dialogue_act.plan_id or '').strip(),
+        'plan_version': int(dialogue_act.plan_version or 0),
+        'act': str(dialogue_act.act or '').strip(),
+    }
+    if payload['act'] == 'progress_update':
+        payload.update(
+            {
+                'reason': str(dialogue_act.reason or '').strip(),
+                'text_hint': str(dialogue_act.text_hint or '').strip(),
+                'context': dict(dialogue_act.context or {}),
+            }
+        )
+    elif payload['act'] == 'ask_clarification':
+        payload['slots_needed'] = sorted(
+            str(slot).strip()
+            for slot in dialogue_act.slots_needed
+            if str(slot).strip()
+        )
+    return json.dumps(payload, sort_keys=True, separators=(',', ':'), ensure_ascii=True)
+
+
+def _planner_safe_fallback_text(dialogue_act: PlannerDialogueAct) -> str:
+    """Return bounded user-facing wording without exposing planner/model prose."""
+    return {
+        'progress_update': 'I am working on it now.',
+        'ask_clarification': 'I need a bit more detail before I continue.',
+        'ask_for_help': 'I need help to continue this task.',
+        'explain_failure': 'I could not complete that task.',
+        'notify_completion': 'I finished that task.',
+        'notify_cancellation': 'Okay, I will stop working on that.',
+    }.get(str(dialogue_act.act or '').strip().lower(), '')
 
 
 def _planner_say_priority(priority_name: str) -> int:

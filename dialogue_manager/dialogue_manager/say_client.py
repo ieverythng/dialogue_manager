@@ -16,6 +16,7 @@
 
 from collections.abc import Callable
 import threading
+import time
 
 from communication_skills.action import Say
 from hri_actions_msgs.msg import ClosedCaption
@@ -29,6 +30,7 @@ from .dialogue import DialogueManager
 
 
 CALLER_NAME = 'dialogue_manager'
+SPEECH_REPLAY_GUARD_SEC = 1.0
 
 
 class SayClient:
@@ -57,6 +59,9 @@ class SayClient:
 
         self._say_client: ActionClient | None = None
         self._on_complete_callback: Callable[[], None] | None = None
+        self._last_speech_signature = ''
+        self._last_speech_time = 0.0
+        self._active_speech_signatures: set[str] = set()
 
     def create_client(self, action_name: str = '/tts/say') -> None:
         """Create the Say action client."""
@@ -93,6 +98,23 @@ class SayClient:
             self._node.get_logger().warn('[SAY] No Say client available')
             return False
 
+        signature = _speech_signature(text)
+        now = time.monotonic()
+        if (
+            signature
+            and (
+                signature in self._active_speech_signatures
+                or (
+                    signature == self._last_speech_signature
+                    and now - self._last_speech_time <= SPEECH_REPLAY_GUARD_SEC
+                )
+            )
+        ):
+            self._node.get_logger().warn(
+                '[SAY] Ignored duplicate in-flight/replayed utterance'
+            )
+            return False
+
         log_text = f'"{text[:80]}..."' if len(text) > 80 else f'"{text}"'
         self._node.get_logger().info(
             f'[SAY] Sending text (priority={priority}): {log_text}'
@@ -109,11 +131,19 @@ class SayClient:
         goal.input = text
 
         if self._say_client.wait_for_server(timeout_sec=1.0):
+            self._last_speech_signature = signature
+            self._last_speech_time = now
+            self._active_speech_signatures.add(signature)
             self._node.get_logger().debug('[SAY] Server available, sending goal')
             send_future = self._say_client.send_goal_async(
                 goal, feedback_callback=self._on_feedback
             )
-            send_future.add_done_callback(self._on_goal_response)
+            send_future.add_done_callback(
+                lambda future, speech_signature=signature: self._on_goal_response(
+                    future,
+                    speech_signature,
+                )
+            )
 
             caption = ClosedCaption()
             caption.speaker_id = ClosedCaption.SPEAKER_ID_SYSTEM
@@ -154,10 +184,11 @@ class SayClient:
 
         return True
 
-    def _on_goal_response(self, future) -> None:
+    def _on_goal_response(self, future, speech_signature: str = '') -> None:
         """Handle Say goal acceptance."""
         goal_handle = future.result()
         if not goal_handle or not goal_handle.accepted:
+            self._active_speech_signatures.discard(speech_signature)
             self._node.get_logger().warn('[SAY] Goal rejected')
             self._dialogue_manager.clear_expression_priority()
             self._invoke_complete_callback()
@@ -165,7 +196,9 @@ class SayClient:
 
         self._node.get_logger().debug('[SAY] Goal accepted, waiting for result')
         result_future = goal_handle.get_result_async()
-        result_future.add_done_callback(self._on_result)
+        result_future.add_done_callback(
+            lambda result, signature=speech_signature: self._on_result(result, signature)
+        )
 
     def _on_feedback(self, feedback_msg) -> None:
         """Forward Say feedback (per-word in data_str) to robot_speech topic."""
@@ -173,8 +206,9 @@ class SayClient:
         if word:
             self._robot_speech_pub.publish(String(data=word))
 
-    def _on_result(self, future) -> None:
+    def _on_result(self, future, speech_signature: str = '') -> None:
         """Handle Say completion."""
+        self._active_speech_signatures.discard(speech_signature)
         self._dialogue_manager.clear_expression_priority()
         try:
             result = future.result()
@@ -198,3 +232,8 @@ class SayClient:
                 self._node.get_logger().error(f'[SAY] Complete callback failed: {e}')
             finally:
                 self._on_complete_callback = None
+
+
+def _speech_signature(text: str) -> str:
+    """Normalize spoken text so formatting differences cannot bypass deduplication."""
+    return ' '.join(str(text or '').strip().lower().split())

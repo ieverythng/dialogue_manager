@@ -162,6 +162,17 @@ class TestSayClientSpeak:
 
         assert result is True
 
+    def test_speak_rejects_duplicate_normalized_utterance(self):
+        """The speaking owner dispatches the same utterance at most once."""
+        mock_say_client = MagicMock()
+        mock_say_client.wait_for_server.return_value = True
+        mock_say_client.send_goal_async.return_value = MagicMock()
+        self.client._say_client = mock_say_client
+
+        assert self.client.speak('Hello   world') is True
+        assert self.client.speak(' hello world ') is False
+        mock_say_client.send_goal_async.assert_called_once()
+
     def test_speak_sets_expression_priority(self):
         """Speak sets expression priority in dialogue manager."""
         mock_say_client = MagicMock()

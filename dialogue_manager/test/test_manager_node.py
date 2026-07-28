@@ -16,7 +16,9 @@
 
 from dialogue_manager.manager_node import DialogueManagerNode
 from dialogue_manager.manager_node import _planner_completion_context
-from dialogue_manager.manager_node import _planner_dialogue_text
+from dialogue_manager.manager_node import _planner_chatbot_context
+from dialogue_manager.manager_node import _planner_dialogue_act_signature
+from dialogue_manager.manager_node import _planner_safe_fallback_text
 from planner_common import PlannerDialogueAct
 import pytest
 import rclpy
@@ -57,6 +59,12 @@ def test_planner_completion_context_exports_structured_facts():
                 'goal_text': 'move your head up and down',
                 'result_summary': 'head motion completed',
                 'requested_intents': ['head_nod'],
+                'plan_outcome_summary': {
+                    'completed_targets': ['apple_1', 'pear_1', 'phone_1'],
+                    'failed_targets': [],
+                    'pending_targets': [],
+                    'all_required_steps_succeeded': True,
+                },
             },
         }
     )
@@ -68,37 +76,99 @@ def test_planner_completion_context_exports_structured_facts():
     assert payload['result_summary'] == 'head motion completed'
     assert payload['text_hint'] == 'I am looking down now.'
     assert payload['requested_intents'] == ['head_nod']
+    assert payload['plan_outcome_summary'] == {
+        'completed_targets': ['apple_1', 'pear_1', 'phone_1'],
+        'failed_targets': [],
+        'pending_targets': [],
+        'all_required_steps_succeeded': True,
+    }
 
 
-def test_planner_dialogue_text_prefers_structured_scan_summary_text() -> None:
-    """summary_text from result_payload has priority over generic summary."""
-    act = PlannerDialogueAct.from_payload(
-        {
-            'act': 'notify_completion',
-            'goal_id': 'goal_scan_1',
-            'context': {
-                'result_summary': 'fallback summary text',
-                'result_payload': {
-                    'skill': 'scan',
-                    'summary_text': 'I found one person (id: anonymous_person_1).',
-                },
-            },
-        }
-    )
-    assert _planner_dialogue_text(act) == 'I found one person (id: anonymous_person_1).'
-
-
-def test_planner_dialogue_text_humanizes_navigation_target_missing_reason() -> None:
-    """Machine-style navigation clarification reasons must be user-facing."""
+def test_planner_clarification_context_routes_reason_through_chatbot():
     act = PlannerDialogueAct.from_payload(
         {
             'act': 'ask_clarification',
-            'goal_id': 'goal_nav_1',
-            'reason': 'missing target information for navigation',
-            'text_hint': 'missing target information for navigation',
+            'goal_id': 'goal_1',
+            'plan_id': 'plan_1',
+            'plan_version': 2,
+            'reason': 'goal_text does not specify a physical task',
+            'text_hint': 'goal_text does not specify a physical task',
+            'await_user_response': True,
+        }
+    )
+
+    payload = _planner_chatbot_context(act)
+
+    assert payload['planner_dialogue']['act'] == 'ask_clarification'
+    assert payload['planner_dialogue']['reason'] == (
+        'goal_text does not specify a physical task'
+    )
+    assert payload['planner_dialogue']['await_user_response'] is True
+
+
+def test_planner_act_signature_suppresses_replay_but_allows_distinct_progress() -> None:
+    first = PlannerDialogueAct.from_payload(
+        {
+            'act': 'progress_update',
+            'goal_id': 'goal_1',
+            'plan_id': 'plan_1',
+            'plan_version': 1,
+            'text_hint': 'I am scanning the room.',
+        }
+    )
+    replay = PlannerDialogueAct.from_payload(
+        {
+            'act': 'progress_update',
+            'goal_id': 'goal_1',
+            'plan_id': 'plan_1',
+            'plan_version': 1,
+            'text_hint': 'I am scanning the room.',
+        }
+    )
+    next_progress = PlannerDialogueAct.from_payload(
+        {
+            'act': 'progress_update',
+            'goal_id': 'goal_1',
+            'plan_id': 'plan_1',
+            'plan_version': 1,
+            'text_hint': 'I am checking the table.',
+        }
+    )
+
+    assert _planner_dialogue_act_signature(first) == _planner_dialogue_act_signature(replay)
+    assert _planner_dialogue_act_signature(first) != _planner_dialogue_act_signature(next_progress)
+
+
+def test_planner_act_signature_allows_distinct_clarification_slots() -> None:
+    target = PlannerDialogueAct.from_payload(
+        {
+            'act': 'ask_clarification',
+            'goal_id': 'goal_1',
+            'plan_id': 'plan_1',
+            'plan_version': 1,
             'slots_needed': ['target'],
         }
     )
-    assert _planner_dialogue_text(act) == (
-        'I need a destination before I can navigate. Where should I go?'
+    location = PlannerDialogueAct.from_payload(
+        {
+            'act': 'ask_clarification',
+            'goal_id': 'goal_1',
+            'plan_id': 'plan_1',
+            'plan_version': 1,
+            'slots_needed': ['location'],
+        }
     )
+
+    assert _planner_dialogue_act_signature(target) != _planner_dialogue_act_signature(location)
+
+
+def test_planner_safe_fallback_never_exposes_raw_reason() -> None:
+    act = PlannerDialogueAct.from_payload(
+        {
+            'act': 'explain_failure',
+            'reason': 'internal planner output invalid: stack trace',
+            'text_hint': 'internal planner output invalid: stack trace',
+        }
+    )
+
+    assert _planner_safe_fallback_text(act) == 'I could not complete that task.'
